@@ -1,0 +1,22 @@
+{
+  "recall-check-interval": 60,
+  "queue-threshold": 400,
+  "call-check-interval": 10,
+  "call-consumer": 10,
+  "failed-call-threshold": 10,
+  "stat-publish-interval": 1,
+  "auto-remove-interval": 60,
+  "dialer-project-check": 60,
+  "stat-crawling-interval": 300,
+  "amd2": {
+    "active": false,
+    "phone-number-prefixes": [
+      "0630"
+    ],
+    "app-params": {
+      "record": 1,
+      "analyzed_length": 25,
+      "filepath": "file path"
+    }
+  }
+}
