@@ -2,4 +2,4 @@ CONFIG=config/config.json
 
 SYSLOG_IDENT="syslog ident"
 SENTRY_DSN_OFFICE=sentry_dsn
-SENTRY_DSN_PROD=https://7d736f13575c46e9ba74a2758a24cd65:079f9c74e2564d198baa1e4dd6f20669@p-sentry.virtual-call-center.eu/36
+SENTRY_DSN_PROD=sentry_dsn
