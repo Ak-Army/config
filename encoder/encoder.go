@@ -4,6 +4,7 @@ type Encoder interface {
 	Encode(interface{}) ([]byte, error)
 	Decode(interface{}, interface{}) error
 	DecodeData(interface{}) (Data, error)
+	DecodeDataList(interface{}) ([]Data, error)
 	String() string
 }
 

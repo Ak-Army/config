@@ -24,10 +24,13 @@ type Loader struct {
 type field struct {
 	name      string
 	key       string
-	value     *reflect.Value
+	value     reflect.Value
+	origValue reflect.Value
 	required  bool
+	isList    bool
 	source    string
 	subFields []*field
+	found     bool
 }
 
 func NewLoader(ctx context.Context, sources ...backend.Backend) (*Loader, error) {
@@ -74,8 +77,7 @@ func (l *Loader) Load(c Config) error {
 func (l *Loader) load(c Config) {
 	to := c.NewSnapshot()
 	ref := reflect.ValueOf(to).Elem()
-	fields := l.parseStruct(&ref)
-
+	fields := l.parseStruct(ref)
 	err := l.resolve(fields)
 	c.SetSnapshot(to, err)
 }
@@ -118,28 +120,35 @@ func (l *Loader) watch(s backend.Backend) error {
 	return nil
 }
 
-func (l *Loader) parseStruct(ref *reflect.Value) []*field {
+func (l *Loader) parseStruct(ref reflect.Value) []*field {
 	var list []*field
 	t := ref.Type()
 	numFields := ref.NumField()
+
 	for i := 0; i < numFields; i++ {
 		structField := t.Field(i)
-		value := ref.Field(i)
-		typ := value.Type()
+		originalValue := ref.Field(i)
+		typ := originalValue.Type()
 		if structField.PkgPath != "" {
 			continue
 		}
+
 		tag := structField.Tag.Get("config")
+		value := reflect.New(typ).Elem()
+		value.Set(originalValue)
 		f := field{
-			name:  structField.Name,
-			key:   tag,
-			value: &value,
+			name:      structField.Name,
+			key:       tag,
+			value:     value,
+			origValue: originalValue,
+			found:     false,
 		}
 		tagCheck := func() {
-			if tag == "-" || tag == "" {
-				list = append(list, l.parseStruct(&value)...)
+			if tag == "-" {
+				list = append(list, l.parseStruct(value)...)
 			} else {
-				f.subFields = l.parseStruct(&value)
+				f.subFields = l.parseStruct(value)
+				l.parseTag(tag, &f)
 				list = append(list, &f)
 			}
 		}
@@ -147,24 +156,40 @@ func (l *Loader) parseStruct(ref *reflect.Value) []*field {
 		case reflect.Struct:
 			tagCheck()
 			continue
+		case reflect.Slice:
+			if value.Type().Elem().Kind() == reflect.Struct {
+				value = reflect.New(value.Type().Elem()).Elem()
+				if tag == "-" {
+					continue
+				}
+				f.isList = true
+				f.value = f.origValue
+				tagCheck()
+				continue
+			}
 		case reflect.Ptr:
-			if value.Type().Elem().Kind() == reflect.Struct && !value.IsNil() {
+			if originalValue.Type().Elem().Kind() == reflect.Struct {
+				if originalValue.IsNil() {
+					value = reflect.New(originalValue.Type().Elem())
+				}
 				value = value.Elem()
 				tagCheck()
 				continue
 			}
 		default:
-			if tag == "-" || tag == "" {
+			if tag == "-" {
 				continue
 			}
 		}
-		l.parseTag(tag, f)
+		l.parseTag(tag, &f)
 		list = append(list, &f)
+
 	}
+
 	return list
 }
 
-func (l *Loader) parseTag(tag string, f field) {
+func (l *Loader) parseTag(tag string, f *field) {
 	if idx := strings.Index(tag, ","); idx != -1 {
 		f.key = tag[:idx]
 		opts := strings.Split(tag[idx+1:], ",")
@@ -183,7 +208,6 @@ func (l *Loader) parseTag(tag string, f field) {
 func (l *Loader) resolve(fields []*field) error {
 	var gerr []string
 	for _, f := range fields {
-		var found bool
 		var backendFound bool
 		for s, data := range l.maps {
 			if f.source != "" && f.source != s.String() {
@@ -196,15 +220,23 @@ func (l *Loader) resolve(fields []*field) error {
 				}
 				continue
 			}
-			found = true
 			break
 		}
-
+		if f.found {
+			f.origValue.Set(f.value)
+		}
 		if f.source != "" && !backendFound {
 			return fmt.Errorf("the backend: '%s' is not supported", f.source)
 		}
-		if f.required && !found {
+		if f.required && !f.found {
 			return fmt.Errorf("required key '%s' for field '%s' not found", f.key, f.name)
+		}
+		if len(f.subFields) != 0 {
+			for _, subF := range f.subFields {
+				if subF.required && !subF.found {
+					return fmt.Errorf("required key '%s' for field '%s' not found", subF.key, subF.name)
+				}
+			}
 		}
 	}
 	if len(gerr) > 0 {
@@ -218,18 +250,53 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 	if !found {
 		return errors.NotFoundf("data %s", f.key)
 	}
+
 	if len(f.subFields) != 0 {
+		if f.isList {
+			newDatas, err := c.Encoder.DecodeDataList(v)
+			if err != nil {
+				return err
+			}
+			val := reflect.MakeSlice(f.value.Type(), len(newDatas), len(newDatas))
+			f.value.Set(val)
+			for i, newData := range newDatas {
+				for a, subF := range f.subFields {
+					subF.value = reflect.New(subF.value.Type()).Elem()
+					f.subFields[a].value = subF.value
+					if err := l.getFieldData(subF, c, newData); err != nil {
+						continue
+					}
+					f.value.Index(i).Field(a).Set(subF.value)
+				}
+			}
+			f.found = true
+			return nil
+		}
 		newData, err := c.Encoder.DecodeData(v)
 		if err != nil {
 			return err
 		}
-		for _, subF := range f.subFields {
-			if err := l.getFieldData(subF, c, newData); err != nil {
-				return err
+		for a, subF := range f.subFields {
+			origValue := f.value
+			if f.value.IsNil() {
+				f.value = reflect.New(f.value.Type().Elem())
 			}
+			if err := l.getFieldData(subF, c, newData); err != nil {
+				f.value = origValue
+				continue
+			}
+			f.value.Elem().Field(a).Set(subF.value)
+
 		}
+		f.found = true
 		return nil
 	}
-	to := f.value.Addr().Interface()
+	var to interface{}
+	if f.value.CanAddr() {
+		to = f.value.Addr().Interface()
+	} else {
+		to = f.value.Interface()
+	}
+	f.found = true
 	return c.Encoder.Decode(v, to)
 }

@@ -27,7 +27,7 @@ type Config struct {
 }
 
 type configStore struct {
-	sync.Mutex
+	sync.RWMutex
 	config Config
 	err    error
 }
@@ -79,8 +79,8 @@ func (c *configStore) SetSnapshot(confInterface interface{}, err error) {
 }
 
 func (c *configStore) Config() (Config, error) {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 	return c.config, c.err
 }
 
@@ -89,10 +89,10 @@ func main() {
 		env.New(env.WithDefaults("config/default")),
 		file.New(file.WithPath("config/config.json")),
 	)
-	c := &configStore{}
 	if err != nil {
 		log.Fatal(err)
 	}
+	c := &configStore{}
 	err = loader.Load(c)
 	if err != nil {
 		log.Fatal(err)

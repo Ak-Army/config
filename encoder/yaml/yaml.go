@@ -53,6 +53,37 @@ func (y yamlEncoder) DecodeData(data interface{}) (encoder.Data, error) {
 	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
 
+func (y yamlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
+	var yamlMaps []map[string]json.RawMessage
+	if d, ok := data.([]byte); ok {
+		err := yaml.Unmarshal(d, &yamlMaps)
+		if err != nil {
+			return nil, err
+		}
+		encoderData := make([]encoder.Data, len(yamlMaps))
+		for i, yamlMap := range yamlMaps {
+			for k, v := range yamlMap {
+				encoderData[i][k] = v
+			}
+		}
+		return encoderData, nil
+	}
+	if d, ok := data.(json.RawMessage); ok {
+		err := json.Unmarshal(d, &yamlMaps)
+		if err != nil {
+			return nil, err
+		}
+		encoderData := make([]encoder.Data, len(yamlMaps))
+		for i, yamlMap := range yamlMaps {
+			for k, v := range yamlMap {
+				encoderData[i][k] = v
+			}
+		}
+		return encoderData, nil
+	}
+	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+}
+
 func (y yamlEncoder) String() string {
 	return "yaml"
 }

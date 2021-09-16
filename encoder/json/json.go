@@ -60,6 +60,39 @@ func (j jsonEncoder) DecodeData(data interface{}) (encoder.Data, error) {
 	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
 
+func (j jsonEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
+	var rets []map[string]json.RawMessage
+	if d, ok := data.(json.RawMessage); ok {
+		err := jsoniter.Unmarshal(d, &rets)
+		if err != nil {
+			return nil, err
+		}
+		encoderData := make([]encoder.Data, len(rets))
+		for i, ret := range rets {
+			encoderData[i] = encoder.Data{}
+			for k, v := range ret {
+				encoderData[i][k] = v
+			}
+		}
+
+		return encoderData, nil
+	}
+	if d, ok := data.([]byte); ok {
+		err := jsoniter.Unmarshal(d, &rets)
+		if err != nil {
+			return nil, err
+		}
+		encoderData := make([]encoder.Data, len(rets))
+		for i, ret := range rets {
+			for k, v := range ret {
+				encoderData[i][k] = v
+			}
+		}
+		return encoderData, nil
+	}
+	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+}
+
 func (j jsonEncoder) String() string {
 	return "json"
 }

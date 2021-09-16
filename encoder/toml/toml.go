@@ -74,6 +74,37 @@ func (t tomlEncoder) DecodeData(data interface{}) (encoder.Data, error) {
 	}
 	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
+func (t tomlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
+	if d, ok := data.([]byte); ok {
+		var rets []map[string]json.RawMessage
+		err := toml.Unmarshal(d, &rets)
+		if err != nil {
+			return nil, err
+		}
+		encoderData := make([]encoder.Data, len(rets))
+		for i, ret := range rets {
+			for k, v := range ret {
+				encoderData[i][k] = v
+			}
+		}
+		return encoderData, nil
+	}
+	if d, ok := data.(innerToml); ok {
+		var rets []map[string]innerToml
+		err := json.Unmarshal(d.InnerToml, &rets)
+		if err != nil {
+			return nil, err
+		}
+		encoderData := make([]encoder.Data, len(rets))
+		for i, ret := range rets {
+			for k, v := range ret {
+				encoderData[i][k] = v
+			}
+		}
+		return encoderData, nil
+	}
+	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+}
 
 func (t tomlEncoder) String() string {
 	return "toml"

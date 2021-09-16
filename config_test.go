@@ -134,12 +134,12 @@ func (suite *ConfigTestSuite) TestLoad() {
 		Ptr:     &ptr,
 		String:  "string",
 		Struct: nested{
-			Int:    math.MaxInt64,
-			String: "string",
+			Int:    0,
+			String: "",
 		},
 		StructPtrNotNil: &nested{
-			Int:    math.MaxInt64,
-			String: "string",
+			Int:    0,
+			String: "",
 		},
 	}, s)
 }
@@ -280,7 +280,7 @@ func (suite *ConfigTestSuite) TestTagsBadRequired() {
 	suite.Equal("", cfg.Key)
 }
 
-func (suite *ConfigTestSuite) TestTagsBadBadBackendValue() {
+func (suite *ConfigTestSuite) TestTagsBadBackendValue() {
 	type test struct {
 		Key string `config:"key,backend=stor"`
 	}
@@ -342,6 +342,49 @@ func (suite *ConfigTestSuite) TestNested() {
 	}, cfg)
 	suite.Equal(&nested{
 		Key: "nested key",
+	}, nst)
+}
+
+func (suite *ConfigTestSuite) TestNestedRequired() {
+	type nested struct {
+		Asd       string `config:"asd"`
+		NestedKey string `config:"key,required"`
+	}
+
+	type test struct {
+		Int    int     `config:"int"`
+		String string  `config:"string"`
+		Key    string  `config:"key"`
+		Nested *nested `config:"nested"`
+	}
+
+	loader, err := NewLoader(suite.ctx)
+	suite.Nil(err)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			suite.createFileForTest([]byte(`{"int":10,"string":"string","key":"key","nested":{"asd":"nested key"}}`)).Name(),
+		)),
+	)
+	suite.Nil(err)
+	nst := &nested{}
+	cfg := &test{
+		Nested: nst,
+	}
+	c := &config{
+		structs: cfg,
+	}
+	err = loader.Load(c)
+	suite.Nil(err)
+	suite.Error(c.err, "required key 'key' for field 'NestedKey' not found")
+	suite.Equal(&test{
+		Int:    10,
+		String: "string",
+		Key:    "key",
+		Nested: nst,
+	}, cfg)
+	suite.Equal(&nested{
+		Asd:       "nested key",
+		NestedKey: "",
 	}, nst)
 }
 
@@ -558,6 +601,39 @@ func (suite *ConfigTestSuite) TestWatch() {
 	defer c.Unlock()
 	suite.Nil(c.err)
 	suite.Equal("name2", s.Name)
+}
+
+func (suite *ConfigTestSuite) TestArray() {
+	type nested2 struct {
+		StringName string `config:"strings"`
+	}
+	type nested struct {
+		NestedInt  int      `config:"ints"`
+		IntPointer *int     `config:"intpointer"`
+		Nested     *nested2 `config:"nes"`
+	}
+
+	s := &struct {
+		ModuleName *string  `config:"module,required"`
+		Int        []nested `config:"int,required"`
+	}{}
+	loader, err := NewLoader(suite.ctx)
+	suite.Nil(err)
+	f := suite.createFileForTest([]byte(`{"module":"name","int":[{"ints":10,"intpointer": 10,"nes":{"strings":"asd"}}, {"ints":11,"nes":{"strings":"qwe"}}]}`))
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			f.Name(),
+		)),
+	)
+	suite.Nil(err)
+	c := &config{
+		structs: s,
+	}
+	err = loader.Load(c)
+	suite.Nil(err)
+	suite.Nil(c.err)
+	suite.Equal("asd", s.Int[0].Nested.StringName)
+	suite.Equal("qwe", s.Int[1].Nested.StringName)
 }
 
 func (suite *ConfigTestSuite) createFileForTest(data []byte) *os.File {
