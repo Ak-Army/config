@@ -158,6 +158,30 @@ func (suite *ConfigTestSuite) TestLoadRequired() {
 	suite.NotNil(c.err)
 }
 
+func (suite *ConfigTestSuite) TestLoadOmitempty() {
+	type Test struct {
+		Hunyi string `config:"name,omitempty"`
+		Alma  string `config:"age,omitempty"`
+	}
+	type st struct {
+		Name []Test `config:"name,omitempty"`
+	}
+	s := &st{}
+	loader, err := NewLoader(suite.ctx)
+	suite.Nil(err)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			suite.createFileForTest([]byte(`{"name":[{"name":"asd","age":10}]}`)).Name(),
+		)),
+	)
+	c := &config{
+		structs: s,
+	}
+	err = loader.Load(c)
+	suite.Nil(err)
+	suite.Nil(c.err)
+}
+
 func (suite *ConfigTestSuite) TestLoadIgnored() {
 	s := &struct {
 		Name string `config:"-"`

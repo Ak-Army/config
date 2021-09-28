@@ -278,14 +278,19 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 		}
 		for a, subF := range f.subFields {
 			origValue := f.value
-			if f.value.IsNil() {
+			kind := f.value.Type().Kind()
+			if kind == reflect.Ptr && f.value.IsNil() {
 				f.value = reflect.New(f.value.Type().Elem())
 			}
 			if err := l.getFieldData(subF, c, newData); err != nil {
 				f.value = origValue
 				continue
 			}
-			f.value.Elem().Field(a).Set(subF.value)
+			if kind == reflect.Struct {
+				f.value.Field(a).Set(subF.value)
+			} else {
+				f.value.Elem().Field(a).Set(subF.value)
+			}
 
 		}
 		f.found = true
