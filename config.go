@@ -14,7 +14,7 @@ import (
 )
 
 type Loader struct {
-	sync.Mutex
+	mu             sync.Mutex
 	ctx            context.Context
 	backend        []backend.Backend
 	backendWatcher []Config
@@ -87,9 +87,11 @@ func (l *Loader) syncSource(s backend.Backend) error {
 	if err != nil {
 		return err
 	}
-	l.Lock()
-	defer l.Unlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	l.maps[s] = c
+
 	return l.watch(s)
 }
 
@@ -108,12 +110,12 @@ func (l *Loader) watch(s backend.Backend) error {
 			case <-l.ctx.Done():
 				return
 			case content := <-ch:
-				l.Lock()
+				l.mu.Lock()
 				l.maps[s] = content
 				for _, config := range l.backendWatcher {
 					l.load(config)
 				}
-				l.Unlock()
+				l.mu.Unlock()
 			}
 		}
 	}()
