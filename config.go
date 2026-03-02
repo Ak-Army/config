@@ -7,11 +7,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/juju/errors"
+	"github.com/pkg/errors"
 
 	"github.com/Ak-Army/config/backend"
 	"github.com/Ak-Army/config/encoder"
 )
+
+var notFountError = errors.New("not found")
 
 type Loader struct {
 	mu             sync.Mutex
@@ -217,7 +219,7 @@ func (l *Loader) resolve(fields []*field) error {
 			}
 			backendFound = true
 			if err := l.getFieldData(f, data, data.Data); err != nil {
-				if !errors.IsNotFound(err) {
+				if !errors.Is(err, notFountError) {
 					gerr = append(gerr, err.Error())
 				}
 				continue
@@ -250,7 +252,7 @@ func (l *Loader) resolve(fields []*field) error {
 func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) error {
 	v, found := data[f.key]
 	if !found {
-		return errors.NotFoundf("data %s", f.key)
+		return errors.WithMessage(notFountError, fmt.Sprintf("data %s", f.key))
 	}
 
 	if len(f.subFields) != 0 {

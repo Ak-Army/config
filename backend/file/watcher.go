@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/juju/errors"
+	"github.com/pkg/errors"
 
 	"github.com/Ak-Army/config/backend"
 )
@@ -67,12 +67,12 @@ func (w *watcher) updateHash() error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return errors.Annotate(err, "Open file error")
+		return errors.WithMessage(err, "open file error")
 	}
 	defer file.Close()
 	s, err := file.Stat()
 	if err != nil {
-		return errors.Annotate(err, "Config file stat error")
+		return errors.WithMessage(err, "config file stat error")
 	}
 	w.hash = fmt.Sprintf("%d|%d", s.ModTime().UnixNano(), s.Size())
 	return nil
