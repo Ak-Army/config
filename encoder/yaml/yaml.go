@@ -62,6 +62,7 @@ func (y yamlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 		}
 		encoderData := make([]encoder.Data, len(yamlMaps))
 		for i, yamlMap := range yamlMaps {
+			encoderData[i] = encoder.Data{}
 			for k, v := range yamlMap {
 				encoderData[i][k] = v
 			}
@@ -75,6 +76,7 @@ func (y yamlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 		}
 		encoderData := make([]encoder.Data, len(yamlMaps))
 		for i, yamlMap := range yamlMaps {
+			encoderData[i] = encoder.Data{}
 			for k, v := range yamlMap {
 				encoderData[i][k] = v
 			}

@@ -660,6 +660,98 @@ func (suite *ConfigTestSuite) TestArray() {
 	suite.Equal("qwe", s.Int[1].Nested.StringName)
 }
 
+func (suite *ConfigTestSuite) TestArrayYaml() {
+	type item struct {
+		Name string `config:"name"`
+		Age  int    `config:"age"`
+	}
+	s := &struct {
+		Items []item `config:"items"`
+	}{}
+	loader, err := NewLoader(suite.ctx)
+	suite.Nil(err)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			suite.createFileForTest([]byte(`items:
+  - name: a
+    age: 1
+  - name: b
+    age: 2
+`)).Name(),
+		), file.WithOption(backend.WithEncoder(yaml.New()))),
+	)
+	suite.Nil(err)
+	c := &config{structs: s}
+	err = loader.Load(c)
+	suite.Nil(err)
+	suite.Nil(c.err)
+	suite.Len(s.Items, 2)
+	suite.Equal("a", s.Items[0].Name)
+	suite.Equal(1, s.Items[0].Age)
+	suite.Equal("b", s.Items[1].Name)
+	suite.Equal(2, s.Items[1].Age)
+}
+
+func (suite *ConfigTestSuite) TestArrayToml() {
+	type item struct {
+		Name string `config:"name"`
+		Age  int    `config:"age"`
+	}
+	s := &struct {
+		Items []item `config:"items"`
+	}{}
+	loader, err := NewLoader(suite.ctx)
+	suite.Nil(err)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			suite.createFileForTest([]byte(`
+[[items]]
+name = "a"
+age = 1
+[[items]]
+name = "b"
+age = 2
+`)).Name(),
+		), file.WithOption(backend.WithEncoder(toml.New()))),
+	)
+	suite.Nil(err)
+	c := &config{structs: s}
+	err = loader.Load(c)
+	suite.Nil(err)
+	suite.Nil(c.err)
+	suite.Len(s.Items, 2)
+	suite.Equal("a", s.Items[0].Name)
+	suite.Equal(1, s.Items[0].Age)
+	suite.Equal("b", s.Items[1].Name)
+	suite.Equal(2, s.Items[1].Age)
+}
+
+// TestPrecedence verifies that when several sources provide the same key and
+// no backend is pinned, the first registered source wins deterministically
+// (regardless of Go's random map iteration order).
+func (suite *ConfigTestSuite) TestPrecedence() {
+	type test struct {
+		Key string `config:"key"`
+	}
+	loader, err := NewLoader(suite.ctx)
+	suite.Nil(err)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			suite.createFileForTest([]byte(`{"key":"first"}`)).Name(),
+		), file.WithOption(backend.WithName("first"))),
+		file.New(file.WithPath(
+			suite.createFileForTest([]byte(`{"key":"second"}`)).Name(),
+		), file.WithOption(backend.WithName("second"))),
+	)
+	suite.Nil(err)
+	cfg := &test{}
+	c := &config{structs: cfg}
+	err = loader.Load(c)
+	suite.Nil(err)
+	suite.Nil(c.err)
+	suite.Equal("first", cfg.Key)
+}
+
 func (suite *ConfigTestSuite) createFileForTest(data []byte) *os.File {
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("file.%d", time.Now().UnixNano()))
 	fh, err := os.Create(path)
@@ -688,9 +780,7 @@ func (c *config) SetSnapshot(i interface{}, err error) {
 }
 
 /*
-
 Run benchmarking with: go test -bench '.'
-
 */
 func BenchmarkAddSourceJson(b *testing.B) {
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("file.%d", time.Now().UnixNano()))
@@ -863,11 +953,11 @@ func BenchmarkLoadYaml(b *testing.B) {
 		b.Fatalf("Unable to create file: %s", path)
 	}
 	_, err = fh.Write([]byte(`
-int = 10
-string = "string"
-key = "key"
-[nested] 
-  key = "nested key"
+int: 10
+string: string
+key: key
+nested:
+  key: nested key
 `))
 	if err != nil {
 		b.Fatalf("Unable to write file: %s", path)
@@ -881,7 +971,7 @@ key = "key"
 	err = loader.AddSource(
 		file.New(file.WithPath(
 			fh.Name(),
-		), file.WithOption(backend.WithEncoder(toml.New()))),
+		), file.WithOption(backend.WithEncoder(yaml.New()))),
 	)
 	if err != nil {
 		b.Fatal("Unable to add source")

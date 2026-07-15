@@ -27,6 +27,15 @@ func (d *innerToml) UnmarshalTOML(text interface{}) error {
 	return err
 }
 
+// UnmarshalJSON lets innerToml be used as a target when re-decoding the
+// JSON representation of a TOML value (e.g. arrays of tables). It captures
+// the raw JSON so scalars, objects and nested arrays are all preserved and
+// can be decoded again downstream.
+func (d *innerToml) UnmarshalJSON(b []byte) error {
+	d.InnerToml = append(d.InnerToml[:0], b...)
+	return nil
+}
+
 func (t tomlEncoder) Encode(v interface{}) ([]byte, error) {
 	b := bytes.NewBuffer(nil)
 	defer b.Reset()
@@ -83,6 +92,7 @@ func (t tomlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 		}
 		encoderData := make([]encoder.Data, len(rets))
 		for i, ret := range rets {
+			encoderData[i] = encoder.Data{}
 			for k, v := range ret {
 				encoderData[i][k] = v
 			}
@@ -97,6 +107,7 @@ func (t tomlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 		}
 		encoderData := make([]encoder.Data, len(rets))
 		for i, ret := range rets {
+			encoderData[i] = encoder.Data{}
 			for k, v := range ret {
 				encoderData[i][k] = v
 			}

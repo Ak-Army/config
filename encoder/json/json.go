@@ -84,6 +84,7 @@ func (j jsonEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 		}
 		encoderData := make([]encoder.Data, len(rets))
 		for i, ret := range rets {
+			encoderData[i] = encoder.Data{}
 			for k, v := range ret {
 				encoderData[i][k] = v
 			}

@@ -29,12 +29,15 @@ func New(opts ...Option) backend.Backend {
 }
 
 func (c *consul) Read() (*backend.Content, error) {
+	if c.client == nil {
+		return nil, fmt.Errorf("consul client not set, use consul.WithClient")
+	}
 	kv, _, err := c.client.KV().List(c.prefix, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	if kv == nil || len(kv) == 0 {
+	if len(kv) == 0 {
 		return nil, fmt.Errorf("source not found: %s", c.prefix)
 	}
 
@@ -56,10 +59,16 @@ func (c *consul) read(kv api.KVPairs) (*backend.Content, error) {
 		target := data
 		path := strings.Split(pathString, "/")
 		for _, dir := range path[:len(path)-1] {
-			if _, ok := target[dir]; !ok {
-				target[dir] = make(map[string]interface{})
+			existing, ok := target[dir]
+			if !ok {
+				existing = make(map[string]interface{})
+				target[dir] = existing
 			}
-			target = target[dir].(map[string]interface{})
+			next, ok := existing.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("consul key path conflict at %q: %q is both a leaf and a prefix", pathString, dir)
+			}
+			target = next
 		}
 		leafDir := path[len(path)-1]
 		target[leafDir] = v.Value

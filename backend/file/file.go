@@ -2,7 +2,7 @@ package file
 
 import (
 	"errors"
-	"io/ioutil"
+	"io"
 	"os"
 	"time"
 
@@ -37,7 +37,7 @@ func (f *file) Read() (*backend.Content, error) {
 	}
 	defer fh.Close()
 
-	b, err := ioutil.ReadAll(fh)
+	b, err := io.ReadAll(fh)
 	if err != nil {
 		return nil, err
 	}

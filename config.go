@@ -13,7 +13,7 @@ import (
 	"github.com/Ak-Army/config/encoder"
 )
 
-var notFountError = errors.New("not found")
+var notFoundError = errors.New("not found")
 
 type Loader struct {
 	mu             sync.Mutex
@@ -65,19 +65,27 @@ func (l *Loader) AddSource(sources ...backend.Backend) error {
 }
 
 func (l *Loader) Load(c Config) error {
-	l.backendWatcher = append(l.backendWatcher, c)
 	to := c.NewSnapshot()
 	ref := reflect.ValueOf(to)
 
 	if !ref.IsValid() || ref.Kind() != reflect.Ptr || ref.Elem().Kind() != reflect.Struct {
 		return errors.New("provided target must be a pointer to struct")
 	}
-	l.load(c)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.backendWatcher = append(l.backendWatcher, c)
+	l.loadInto(c, to)
 	return nil
 }
 
+// load builds a fresh snapshot and stores it. It must be called with l.mu held.
 func (l *Loader) load(c Config) {
-	to := c.NewSnapshot()
+	l.loadInto(c, c.NewSnapshot())
+}
+
+// loadInto resolves the sources into the given snapshot and stores it.
+// It must be called with l.mu held.
+func (l *Loader) loadInto(c Config, to interface{}) {
 	ref := reflect.ValueOf(to).Elem()
 	fields := l.parseStruct(ref)
 	err := l.resolve(fields)
@@ -213,13 +221,21 @@ func (l *Loader) resolve(fields []*field) error {
 	var gerr []string
 	for _, f := range fields {
 		var backendFound bool
-		for s, data := range l.maps {
+		// Iterate the backends in registration order so that source
+		// precedence is deterministic (the first registered source that
+		// provides the key wins), rather than depending on Go's random
+		// map iteration order.
+		for _, s := range l.backend {
+			data, ok := l.maps[s]
+			if !ok {
+				continue
+			}
 			if f.source != "" && f.source != s.String() {
 				continue
 			}
 			backendFound = true
 			if err := l.getFieldData(f, data, data.Data); err != nil {
-				if !errors.Is(err, notFountError) {
+				if !errors.Is(err, notFoundError) {
 					gerr = append(gerr, err.Error())
 				}
 				continue
@@ -252,7 +268,7 @@ func (l *Loader) resolve(fields []*field) error {
 func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) error {
 	v, found := data[f.key]
 	if !found {
-		return errors.WithMessage(notFountError, fmt.Sprintf("data %s", f.key))
+		return errors.WithMessage(notFoundError, fmt.Sprintf("data %s", f.key))
 	}
 
 	if len(f.subFields) != 0 {
@@ -267,10 +283,19 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 				for a, subF := range f.subFields {
 					subF.value = reflect.New(subF.value.Type()).Elem()
 					f.subFields[a].value = subF.value
+					// Reset found for every element so that a required
+					// subfield is validated per list element instead of
+					// leaking a stale "found" from a previous element.
+					subF.found = false
 					if err := l.getFieldData(subF, c, newData); err != nil {
 						continue
 					}
 					f.value.Index(i).Field(a).Set(subF.value)
+				}
+				for _, subF := range f.subFields {
+					if subF.required && !subF.found {
+						return fmt.Errorf("required key '%s' for field '%s' not found", subF.key, subF.name)
+					}
 				}
 			}
 			f.found = true
@@ -306,6 +331,9 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 	} else {
 		to = f.value.Interface()
 	}
+	if err := c.Encoder.Decode(v, to); err != nil {
+		return err
+	}
 	f.found = true
-	return c.Encoder.Decode(v, to)
+	return nil
 }
