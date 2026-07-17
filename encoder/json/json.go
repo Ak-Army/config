@@ -3,6 +3,7 @@ package json
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 
 	jsoniter "github.com/json-iterator/go"
@@ -10,6 +11,18 @@ import (
 
 	"github.com/Ak-Army/config/encoder"
 )
+
+// bytesOf normalises the raw representations DecodeData/DecodeDataList accept.
+func bytesOf(data interface{}) ([]byte, bool) {
+	switch d := data.(type) {
+	case json.RawMessage:
+		return d, true
+	case []byte:
+		return d, true
+	default:
+		return nil, false
+	}
+}
 
 type jsonEncoder struct{}
 
@@ -34,64 +47,63 @@ func (j jsonEncoder) Decode(data interface{}, v interface{}) error {
 	return fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
 
+// DecodeData splits a JSON object into its top-level members, keeping each
+// value as a raw message for a later typed Decode. It streams the object with a
+// single iterator so only one map is built and no intermediate
+// map[string]json.RawMessage is boxed into interface values.
 func (j jsonEncoder) DecodeData(data interface{}) (encoder.Data, error) {
-	ret := make(map[string]json.RawMessage)
+	d, ok := bytesOf(data)
+	if !ok {
+		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+	}
+	iter := jsoniter.ConfigDefault.BorrowIterator(d)
+	defer jsoniter.ConfigDefault.ReturnIterator(iter)
+
 	encoderData := make(encoder.Data)
-	if d, ok := data.(json.RawMessage); ok {
-		err := jsoniter.Unmarshal(d, &ret)
-		if err != nil {
-			return nil, err
-		}
-		for k, v := range ret {
-			encoderData[k] = v
-		}
-		return encoderData, nil
+	// A JSON null decodes to an empty object, mirroring Unmarshal into a map.
+	if iter.WhatIsNext() == jsoniter.NilValue {
+		iter.ReadNil()
+		return encoderData, iterErr(iter)
 	}
-	if d, ok := data.([]byte); ok {
-		err := jsoniter.Unmarshal(d, &ret)
-		if err != nil {
-			return nil, err
-		}
-		for k, v := range ret {
-			encoderData[k] = v
-		}
-		return encoderData, nil
+	for field := iter.ReadObject(); field != ""; field = iter.ReadObject() {
+		encoderData[field] = json.RawMessage(iter.SkipAndReturnBytes())
 	}
-	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+	if err := iterErr(iter); err != nil {
+		return nil, err
+	}
+	return encoderData, nil
 }
 
+// DecodeDataList splits a JSON array of objects the same way DecodeData splits a
+// single object.
 func (j jsonEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
-	var rets []map[string]json.RawMessage
-	if d, ok := data.(json.RawMessage); ok {
-		err := jsoniter.Unmarshal(d, &rets)
-		if err != nil {
-			return nil, err
-		}
-		encoderData := make([]encoder.Data, len(rets))
-		for i, ret := range rets {
-			encoderData[i] = encoder.Data{}
-			for k, v := range ret {
-				encoderData[i][k] = v
-			}
-		}
+	d, ok := bytesOf(data)
+	if !ok {
+		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+	}
+	iter := jsoniter.ConfigDefault.BorrowIterator(d)
+	defer jsoniter.ConfigDefault.ReturnIterator(iter)
 
-		return encoderData, nil
-	}
-	if d, ok := data.([]byte); ok {
-		err := jsoniter.Unmarshal(d, &rets)
-		if err != nil {
-			return nil, err
+	var list []encoder.Data
+	for iter.ReadArray() {
+		item := make(encoder.Data)
+		for field := iter.ReadObject(); field != ""; field = iter.ReadObject() {
+			item[field] = json.RawMessage(iter.SkipAndReturnBytes())
 		}
-		encoderData := make([]encoder.Data, len(rets))
-		for i, ret := range rets {
-			encoderData[i] = encoder.Data{}
-			for k, v := range ret {
-				encoderData[i][k] = v
-			}
-		}
-		return encoderData, nil
+		list = append(list, item)
 	}
-	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+	if err := iterErr(iter); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// iterErr returns the iterator error, treating a clean end of input as success.
+func iterErr(iter *jsoniter.Iterator) error {
+	if iter.Error != nil && iter.Error != io.EOF {
+		return iter.Error
+	}
+	return nil
 }
 
 func (j jsonEncoder) String() string {

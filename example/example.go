@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/Ak-Army/config"
@@ -26,12 +25,6 @@ type Config struct {
 	Amd2Config           *Amd2Config   `config:"amd2"`
 }
 
-type configStore struct {
-	sync.RWMutex
-	config Config
-	err    error
-}
-
 type Amd2Config struct {
 	Active              bool           `config:"active"`
 	PhoneNumberPrefixes []string       `config:"phone-number-prefixes"`
@@ -44,7 +37,12 @@ type Amd2AppParams struct {
 	Filepath       string `config:"filepath"`
 }
 
-func (c *configStore) NewSnapshot() interface{} {
+// configHandler supplies the defaults and post-processing for Config; it
+// implements config.Handler[Config].
+type configHandler struct{}
+
+// Default returns a freshly initialised Config holding the default values.
+func (*Config) Default() *Config {
 	return &Config{
 		RecallCheckInterval: 30,
 		QueueThreshold:      400,
@@ -61,11 +59,8 @@ func (c *configStore) NewSnapshot() interface{} {
 	}
 }
 
-func (c *configStore) SetSnapshot(confInterface interface{}, err error) {
-	c.Lock()
-	defer c.Unlock()
-	conf := confInterface.(*Config)
-
+// Set scales the raw numeric values into the durations the app expects.
+func (*Config) Set(conf *Config) {
 	conf.RecallCheckInterval *= time.Second
 	conf.CallCheckInterval *= time.Second
 	conf.CallConsumer *= time.Millisecond
@@ -74,14 +69,6 @@ func (c *configStore) SetSnapshot(confInterface interface{}, err error) {
 	conf.AutoRemoveInterval *= time.Second
 	conf.DialerProjectCheck *= time.Second
 	conf.StatCrawlingInterval *= time.Second
-	c.config = *conf
-	c.err = err
-}
-
-func (c *configStore) Config() (Config, error) {
-	c.RLock()
-	defer c.RUnlock()
-	return c.config, c.err
 }
 
 func main() {
@@ -92,9 +79,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	c := &configStore{}
-	err = loader.Load(c)
-	if err != nil {
+	c := config.NewStore[Config](&Config{})
+	if err := config.Load(loader, c); err != nil {
 		log.Fatal(err)
 	}
 	conf, err := c.Config()

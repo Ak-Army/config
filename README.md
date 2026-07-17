@@ -14,13 +14,18 @@ go get github.com/Ak-Army/config
 
 ## Quick start
 
+The easiest way to hold a configuration is the generic `config.Store`. You give
+it a `Handler` that supplies the defaults (and optional post-processing) and read
+the resolved value back with `Store.Config()` — the store takes care of the
+snapshot plumbing and locking for you.
+
 ```go
 package main
 
 import (
 	"context"
+	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/Ak-Army/config"
@@ -34,23 +39,14 @@ type Settings struct {
 	Timeout time.Duration `config:"timeout"`
 }
 
-// A type implementing config.Config provides a fresh snapshot to fill and
-// receives the populated result. It is responsible for its own locking.
-type store struct {
-	sync.RWMutex
-	cfg Settings
-	err error
+// Settings is its own config.Handler[Settings]: Default supplies the defaults
+// and Set post-processes the resolved snapshot.
+func (*Settings) Default() *Settings {
+	return &Settings{Port: 8080, Timeout: 30}
 }
 
-func (s *store) NewSnapshot() interface{} {
-	// Return a pointer to a struct pre-filled with defaults.
-	return &Settings{Port: 8080}
-}
-
-func (s *store) SetSnapshot(v interface{}, err error) {
-	s.Lock()
-	defer s.Unlock()
-	s.cfg, s.err = *v.(*Settings), err
+func (*Settings) Set(s *Settings) {
+	s.Timeout *= time.Second // scale the raw number into a duration
 }
 
 func main() {
@@ -61,14 +57,55 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s := &store{}
-	if err := loader.Load(s); err != nil {
+
+	store := config.NewStore[Settings](&Settings{})
+	if err := config.Load(loader, store); err != nil {
 		log.Fatal(err) // only structural errors (e.g. target is not a pointer to struct)
 	}
-	// Per-load errors (missing required keys, decode failures) are delivered
-	// to SetSnapshot's err argument, not returned by Load.
+
+	cfg, err := store.Config()
+	// Per-load errors (missing required keys, decode failures) are surfaced
+	// here, not returned by Load.
+	fmt.Printf("%+v, err: %v\n", cfg, err)
 }
 ```
+
+## Holding the configuration
+
+The loader loads into a `config.Store[T]` — a generic, concurrency-safe holder
+for the configuration struct `T`. It is the only target `Load` accepts:
+
+```go
+func Load[T any](l *config.Loader, s *config.Store[T]) error
+```
+
+Build a store with `config.NewStore[T]` and pass it a `config.Handler[T]` that
+supplies the type-specific parts:
+
+```go
+type Handler[T any] interface {
+	Default() *T // fresh *T with defaults; called for every (re)load
+	Set(*T)      // post-process the resolved snapshot (scale durations, derive fields)
+}
+```
+
+On every load (including watcher-triggered reloads) the store hands the loader a
+fresh `*T` from `Default()`, the loader resolves the sources into it, `Set()`
+post-processes the result, and the value is stored. Read the current value back
+with `store.Config()`, which is safe to call concurrently with reloads and
+returns the last load's error alongside the config, so a bad reload never
+silently replaces a good snapshot.
+
+`NewStore` also accepts a `nil` handler, in which case a zero-valued `*T` is used
+for every load and no post-processing runs:
+
+```go
+store := config.NewStore[Settings](nil)
+```
+
+A common pattern is to let the configuration struct be its own handler by
+defining `Default` and `Set` on it (as in the quick start above), then passing a
+zero value: `config.NewStore[Settings](&Settings{})`.
 
 ## The `config` tag
 
@@ -119,9 +156,9 @@ file.New(file.WithPath("config.yaml"),
 
 ## Watching / hot-reload
 
-Enable with `backend.WithWatcher()`. When a watched source changes, every
-target previously passed to `Load` is re-populated and its `SetSnapshot` is
-called again. Watching stops when the `context.Context` given to `NewLoader`
+Enable with `backend.WithWatcher()`. When a watched source changes, every store
+previously passed to `Load` is re-populated and its next `Config()` returns the
+new snapshot. Watching stops when the `context.Context` given to `NewLoader`
 is cancelled.
 
 ## Error handling
@@ -130,6 +167,6 @@ There are two error channels:
 
 - `Load` (and `NewLoader`/`AddSource`) return **structural** errors — a bad
   target type, or a source that fails its initial read.
-- **Per-field** errors (missing required keys, decode failures) are passed to
-  your `SetSnapshot(v, err)` implementation so that a bad reload never replaces
-  a good snapshot silently.
+- **Per-field** errors (missing required keys, decode failures) are surfaced via
+  `store.Config()`'s second return value, so a bad reload never replaces a good
+  snapshot silently.

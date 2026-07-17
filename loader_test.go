@@ -6,7 +6,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +42,21 @@ func (suite *ConfigTestSuite) TearDownTest() {
 	suite.files = []*os.File{}
 }
 
+// snapshotHandler seeds a Store with a caller-supplied default for the tests.
+// A nil def yields a zero-valued *T for every load.
+type snapshotHandler[T any] struct {
+	def func() *T
+}
+
+func (h snapshotHandler[T]) Default() *T {
+	if h.def != nil {
+		return h.def()
+	}
+	return new(T)
+}
+
+func (snapshotHandler[T]) Set(*T) {}
+
 func (suite *ConfigTestSuite) TestLoad() {
 	type nested struct {
 		Int    int    `config:"int"`
@@ -71,8 +85,6 @@ func (suite *ConfigTestSuite) TestLoad() {
 		Ignored         string
 	}
 
-	s := &testStruct{}
-	s.StructPtrNotNil = new(nested)
 	loader, err := NewLoader(suite.ctx)
 	suite.Nil(err)
 	err = loader.AddSource(
@@ -112,12 +124,14 @@ func (suite *ConfigTestSuite) TestLoad() {
 	)
 	suite.Nil(err)
 	ptr := "ptr"
-	c := &config{
-		structs: s,
-	}
-	err = loader.Load(c)
+	store := NewStore[testStruct](snapshotHandler[testStruct]{def: func() *testStruct {
+		return &testStruct{StructPtrNotNil: new(nested)}
+	}})
+	err = Load(loader, store)
 	suite.Nil(err, "Load got err")
-	suite.Equal(&testStruct{
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal(testStruct{
 		Bool:    true,
 		Int:     math.MaxInt64,
 		Int8:    math.MaxInt8,
@@ -141,21 +155,20 @@ func (suite *ConfigTestSuite) TestLoad() {
 			Int:    0,
 			String: "",
 		},
-	}, s)
+	}, cfg)
 }
 
 func (suite *ConfigTestSuite) TestLoadRequired() {
-	s := &struct {
+	type test struct {
 		Name string `config:"name,required"`
-	}{}
+	}
 	loader, err := NewLoader(suite.ctx)
 	suite.Nil(err)
-	c := &config{
-		structs: s,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.NotNil(c.err)
+	_, cerr := store.Config()
+	suite.NotNil(cerr)
 }
 
 func (suite *ConfigTestSuite) TestLoadOmitempty() {
@@ -166,7 +179,6 @@ func (suite *ConfigTestSuite) TestLoadOmitempty() {
 	type st struct {
 		Name []Test `config:"name,omitempty"`
 	}
-	s := &st{}
 	loader, err := NewLoader(suite.ctx)
 	suite.Nil(err)
 	err = loader.AddSource(
@@ -174,19 +186,19 @@ func (suite *ConfigTestSuite) TestLoadOmitempty() {
 			suite.createFileForTest([]byte(`{"name":[{"name":"asd","age":10}]}`)).Name(),
 		)),
 	)
-	c := &config{
-		structs: s,
-	}
-	err = loader.Load(c)
 	suite.Nil(err)
-	suite.Nil(c.err)
+	store := NewStore[st](nil)
+	err = Load(loader, store)
+	suite.Nil(err)
+	_, cerr := store.Config()
+	suite.Nil(cerr)
 }
 
 func (suite *ConfigTestSuite) TestLoadIgnored() {
-	s := &struct {
+	type test struct {
 		Name string `config:"-"`
 		Age  int    `config:"age"`
-	}{}
+	}
 
 	loader, err := NewLoader(suite.ctx)
 	suite.Nil(err)
@@ -196,13 +208,13 @@ func (suite *ConfigTestSuite) TestLoadIgnored() {
 		)),
 	)
 	suite.Nil(err)
-	c := &config{
-		structs: s,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Equal(10, s.Age)
-	suite.Empty(s.Name)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal(10, cfg.Age)
+	suite.Empty(cfg.Name)
 }
 
 func (suite *ConfigTestSuite) TestBackendTagOK() {
@@ -231,13 +243,11 @@ func (suite *ConfigTestSuite) TestBackendTagOK() {
 		),
 	)
 	suite.Nil(err)
-	cfg := &test{}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
 
 	suite.Equal("nan", cfg.Alma)
 	suite.Equal("megvan", cfg.Hunyi)
@@ -269,13 +279,11 @@ func (suite *ConfigTestSuite) TestBackendTagNOK() {
 		),
 	)
 	suite.Nil(err)
-	cfg := &test{}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.EqualError(c.err, "required key 'alma' for field 'Alma' not found")
+	_, cerr := store.Config()
+	suite.EqualError(cerr, "required key 'alma' for field 'Alma' not found")
 }
 
 func (suite *ConfigTestSuite) TestTagsBadRequired() {
@@ -293,13 +301,11 @@ func (suite *ConfigTestSuite) TestTagsBadRequired() {
 		),
 	)
 	suite.Nil(err)
-	cfg := &test{}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
 
 	suite.Equal("", cfg.Key)
 }
@@ -319,13 +325,11 @@ func (suite *ConfigTestSuite) TestTagsBadBackendValue() {
 		),
 	)
 	suite.Nil(err)
-	cfg := &test{}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.NotNil(c.err)
+	_, cerr := store.Config()
+	suite.NotNil(cerr)
 }
 
 func (suite *ConfigTestSuite) TestNested() {
@@ -348,25 +352,21 @@ func (suite *ConfigTestSuite) TestNested() {
 		)),
 	)
 	suite.Nil(err)
-	nst := &nested{}
-	cfg := &test{
-		Nested: nst,
-	}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](snapshotHandler[test]{def: func() *test {
+		return &test{Nested: &nested{}}
+	}})
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
-	suite.Equal(&test{
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
-		Nested: nst,
+		Nested: &nested{
+			Key: "nested key",
+		},
 	}, cfg)
-	suite.Equal(&nested{
-		Key: "nested key",
-	}, nst)
 }
 
 func (suite *ConfigTestSuite) TestNestedRequired() {
@@ -390,26 +390,22 @@ func (suite *ConfigTestSuite) TestNestedRequired() {
 		)),
 	)
 	suite.Nil(err)
-	nst := &nested{}
-	cfg := &test{
-		Nested: nst,
-	}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](snapshotHandler[test]{def: func() *test {
+		return &test{Nested: &nested{}}
+	}})
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Error(c.err, "required key 'key' for field 'NestedKey' not found")
-	suite.Equal(&test{
+	cfg, cerr := store.Config()
+	suite.Error(cerr, "required key 'key' for field 'NestedKey' not found")
+	suite.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
-		Nested: nst,
+		Nested: &nested{
+			Asd:       "nested key",
+			NestedKey: "",
+		},
 	}, cfg)
-	suite.Equal(&nested{
-		Asd:       "nested key",
-		NestedKey: "",
-	}, nst)
 }
 
 func (suite *ConfigTestSuite) TestNestedYaml() {
@@ -431,30 +427,26 @@ func (suite *ConfigTestSuite) TestNestedYaml() {
 			suite.createFileForTest([]byte(`int: 10
 string: string
 key: key
-nested: 
+nested:
   key: nested key`)).Name(),
 		), file.WithOption(backend.WithEncoder(yaml.New()))),
 	)
 	suite.Nil(err)
-	nst := &nested{}
-	cfg := &test{
-		Nested: nst,
-	}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](snapshotHandler[test]{def: func() *test {
+		return &test{Nested: &nested{}}
+	}})
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
-	suite.Equal(&test{
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
-		Nested: nst,
+		Nested: &nested{
+			Key: "nested key",
+		},
 	}, cfg)
-	suite.Equal(&nested{
-		Key: "nested key",
-	}, nst)
 }
 
 func (suite *ConfigTestSuite) TestNestedToml() {
@@ -477,31 +469,27 @@ func (suite *ConfigTestSuite) TestNestedToml() {
 int = 10
 string = "string"
 key = "key"
-[nested] 
+[nested]
   key = "nested key"
 `)).Name(),
 		), file.WithOption(backend.WithEncoder(toml.New()))),
 	)
 	suite.Nil(err)
-	nst := &nested{}
-	cfg := &test{
-		Nested: nst,
-	}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](snapshotHandler[test]{def: func() *test {
+		return &test{Nested: &nested{}}
+	}})
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
-	suite.Equal(&test{
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
-		Nested: nst,
+		Nested: &nested{
+			Key: "nested key",
+		},
 	}, cfg)
-	suite.Equal(&nested{
-		Key: "nested key",
-	}, nst)
 }
 
 func (suite *ConfigTestSuite) TestLoadEnv() {
@@ -523,14 +511,12 @@ KEY="key"
 		)),
 	)
 	suite.Nil(err)
-	cfg := &test{}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
-	suite.Equal(&test{
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
@@ -557,14 +543,12 @@ BB_Key="aaaa"
 		), env.WithStripPrefix("AA_")),
 	)
 	suite.Nil(err)
-	cfg := &test{}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
-	suite.Equal(&test{
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
@@ -585,22 +569,20 @@ func (suite *ConfigTestSuite) TestTagsBadTagsOrder() {
 		),
 	)
 	suite.Nil(err)
-	cfg := &test{}
-	c := &config{
-		structs: cfg,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
 
 	suite.Equal("", cfg.Key)
 }
 
 func (suite *ConfigTestSuite) TestWatch() {
-	s := &struct {
+	type test struct {
 		Name string `config:"name,required"`
 		Age  int    `config:"age,required"`
-	}{}
+	}
 	loader, err := NewLoader(suite.ctx)
 	suite.Nil(err)
 	f := suite.createFileForTest([]byte(`{"name":"name","age":10}`))
@@ -611,20 +593,18 @@ func (suite *ConfigTestSuite) TestWatch() {
 			file.WithOption(backend.WithWatcher())),
 	)
 	suite.Nil(err)
-	c := &config{
-		structs: s,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
+	_, cerr := store.Config()
+	suite.Nil(cerr)
 	f.Seek(0, 0)
 	f.WriteString(`{"name":"name2","age":10}`)
 	f.Sync()
 	time.Sleep(4 * time.Second)
-	c.Lock()
-	defer c.Unlock()
-	suite.Nil(c.err)
-	suite.Equal("name2", s.Name)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal("name2", cfg.Name)
 }
 
 func (suite *ConfigTestSuite) TestArray() {
@@ -636,11 +616,11 @@ func (suite *ConfigTestSuite) TestArray() {
 		IntPointer *int     `config:"intpointer"`
 		Nested     *nested2 `config:"nes"`
 	}
-
-	s := &struct {
+	type test struct {
 		ModuleName *string  `config:"module,required"`
 		Int        []nested `config:"int,required"`
-	}{}
+	}
+
 	loader, err := NewLoader(suite.ctx)
 	suite.Nil(err)
 	f := suite.createFileForTest([]byte(`{"module":"name","int":[{"ints":10,"intpointer": 10,"nes":{"strings":"asd"}}, {"ints":11,"nes":{"strings":"qwe"}}]}`))
@@ -650,14 +630,13 @@ func (suite *ConfigTestSuite) TestArray() {
 		)),
 	)
 	suite.Nil(err)
-	c := &config{
-		structs: s,
-	}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
-	suite.Equal("asd", s.Int[0].Nested.StringName)
-	suite.Equal("qwe", s.Int[1].Nested.StringName)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Equal("asd", cfg.Int[0].Nested.StringName)
+	suite.Equal("qwe", cfg.Int[1].Nested.StringName)
 }
 
 func (suite *ConfigTestSuite) TestArrayYaml() {
@@ -665,9 +644,9 @@ func (suite *ConfigTestSuite) TestArrayYaml() {
 		Name string `config:"name"`
 		Age  int    `config:"age"`
 	}
-	s := &struct {
+	type test struct {
 		Items []item `config:"items"`
-	}{}
+	}
 	loader, err := NewLoader(suite.ctx)
 	suite.Nil(err)
 	err = loader.AddSource(
@@ -681,15 +660,16 @@ func (suite *ConfigTestSuite) TestArrayYaml() {
 		), file.WithOption(backend.WithEncoder(yaml.New()))),
 	)
 	suite.Nil(err)
-	c := &config{structs: s}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
-	suite.Len(s.Items, 2)
-	suite.Equal("a", s.Items[0].Name)
-	suite.Equal(1, s.Items[0].Age)
-	suite.Equal("b", s.Items[1].Name)
-	suite.Equal(2, s.Items[1].Age)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Len(cfg.Items, 2)
+	suite.Equal("a", cfg.Items[0].Name)
+	suite.Equal(1, cfg.Items[0].Age)
+	suite.Equal("b", cfg.Items[1].Name)
+	suite.Equal(2, cfg.Items[1].Age)
 }
 
 func (suite *ConfigTestSuite) TestArrayToml() {
@@ -697,9 +677,9 @@ func (suite *ConfigTestSuite) TestArrayToml() {
 		Name string `config:"name"`
 		Age  int    `config:"age"`
 	}
-	s := &struct {
+	type test struct {
 		Items []item `config:"items"`
-	}{}
+	}
 	loader, err := NewLoader(suite.ctx)
 	suite.Nil(err)
 	err = loader.AddSource(
@@ -715,15 +695,16 @@ age = 2
 		), file.WithOption(backend.WithEncoder(toml.New()))),
 	)
 	suite.Nil(err)
-	c := &config{structs: s}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
-	suite.Len(s.Items, 2)
-	suite.Equal("a", s.Items[0].Name)
-	suite.Equal(1, s.Items[0].Age)
-	suite.Equal("b", s.Items[1].Name)
-	suite.Equal(2, s.Items[1].Age)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
+	suite.Len(cfg.Items, 2)
+	suite.Equal("a", cfg.Items[0].Name)
+	suite.Equal(1, cfg.Items[0].Age)
+	suite.Equal("b", cfg.Items[1].Name)
+	suite.Equal(2, cfg.Items[1].Age)
 }
 
 // TestPrecedence verifies that when several sources provide the same key and
@@ -744,11 +725,11 @@ func (suite *ConfigTestSuite) TestPrecedence() {
 		), file.WithOption(backend.WithName("second"))),
 	)
 	suite.Nil(err)
-	cfg := &test{}
-	c := &config{structs: cfg}
-	err = loader.Load(c)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
 	suite.Nil(err)
-	suite.Nil(c.err)
+	cfg, cerr := store.Config()
+	suite.Nil(cerr)
 	suite.Equal("first", cfg.Key)
 }
 
@@ -760,23 +741,6 @@ func (suite *ConfigTestSuite) createFileForTest(data []byte) *os.File {
 	suite.Nil(err)
 	suite.files = append(suite.files, fh)
 	return fh
-}
-
-type config struct {
-	sync.Mutex
-	structs interface{}
-	err     error
-}
-
-func (c *config) NewSnapshot() interface{} {
-	return c.structs
-}
-
-func (c *config) SetSnapshot(i interface{}, err error) {
-	c.Lock()
-	defer c.Unlock()
-	c.structs = i
-	c.err = err
 }
 
 /*
@@ -821,7 +785,7 @@ func BenchmarkAddSourceYaml(b *testing.B) {
 	_, err = fh.Write([]byte(`int: 10
 string: string
 key: key
-nested: 
+nested:
   key: nested key`))
 	if err != nil {
 		b.Fatalf("Unable to write file: %s", path)
@@ -857,7 +821,7 @@ func BenchmarkAddSourceToml(b *testing.B) {
 int = 10
 string = "string"
 key = "key"
-[nested] 
+[nested]
   key = "nested key"
 `))
 	if err != nil {
@@ -884,16 +848,24 @@ key = "key"
 	}
 }
 
+type benchNested struct {
+	Key string `config:"key"`
+}
+
+type benchTest struct {
+	Int    int          `config:"int"`
+	String string       `config:"string"`
+	Key    string       `config:"key"`
+	Nested *benchNested `config:"nested"`
+}
+
+func benchStore() *Store[benchTest] {
+	return NewStore[benchTest](snapshotHandler[benchTest]{def: func() *benchTest {
+		return &benchTest{Nested: &benchNested{}}
+	}})
+}
+
 func BenchmarkLoadJson(b *testing.B) {
-	type nested struct {
-		Key string `config:"key"`
-	}
-	type test struct {
-		Int    int     `config:"int"`
-		String string  `config:"string"`
-		Key    string  `config:"key"`
-		Nested *nested `config:"nested"`
-	}
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("file.%d", time.Now().UnixNano()))
 	fh, err := os.Create(path)
 	if err != nil {
@@ -917,36 +889,21 @@ func BenchmarkLoadJson(b *testing.B) {
 	if err != nil {
 		b.Fatal("Unable to add source")
 	}
-	nst := &nested{}
-	cfg := &test{
-		Nested: nst,
-	}
-	c := &config{
-		structs: cfg,
-	}
+	store := benchStore()
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		err = loader.Load(c)
+		err = Load(loader, store)
 		if err != nil {
 			b.Fatal("Unable to load")
 		}
-		if c.err != nil {
+		if _, cerr := store.Config(); cerr != nil {
 			b.Fatal("Loading error")
 		}
 	}
 }
 
 func BenchmarkLoadYaml(b *testing.B) {
-	type nested struct {
-		Key string `config:"key"`
-	}
-	type test struct {
-		Int    int     `config:"int"`
-		String string  `config:"string"`
-		Key    string  `config:"key"`
-		Nested *nested `config:"nested"`
-	}
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("file.%d", time.Now().UnixNano()))
 	fh, err := os.Create(path)
 	if err != nil {
@@ -976,36 +933,21 @@ nested:
 	if err != nil {
 		b.Fatal("Unable to add source")
 	}
-	nst := &nested{}
-	cfg := &test{
-		Nested: nst,
-	}
-	c := &config{
-		structs: cfg,
-	}
+	store := benchStore()
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		err = loader.Load(c)
+		err = Load(loader, store)
 		if err != nil {
 			b.Fatal("Unable to load")
 		}
-		if c.err != nil {
+		if _, cerr := store.Config(); cerr != nil {
 			b.Fatal("Loading error")
 		}
 	}
 }
 
 func BenchmarkLoadToml(b *testing.B) {
-	type nested struct {
-		Key string `config:"key"`
-	}
-	type test struct {
-		Int    int     `config:"int"`
-		String string  `config:"string"`
-		Key    string  `config:"key"`
-		Nested *nested `config:"nested"`
-	}
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("file.%d", time.Now().UnixNano()))
 	fh, err := os.Create(path)
 	if err != nil {
@@ -1015,7 +957,7 @@ func BenchmarkLoadToml(b *testing.B) {
 int = 10
 string = "string"
 key = "key"
-[nested] 
+[nested]
   key = "nested key"
 `))
 	if err != nil {
@@ -1035,21 +977,15 @@ key = "key"
 	if err != nil {
 		b.Fatal("Unable to add source")
 	}
-	nst := &nested{}
-	cfg := &test{
-		Nested: nst,
-	}
-	c := &config{
-		structs: cfg,
-	}
+	store := benchStore()
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		err = loader.Load(c)
+		err = Load(loader, store)
 		if err != nil {
 			b.Fatal("Unable to load")
 		}
-		if c.err != nil {
+		if _, cerr := store.Config(); cerr != nil {
 			b.Fatal("Loading error")
 		}
 	}
