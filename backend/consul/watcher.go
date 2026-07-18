@@ -45,7 +45,12 @@ func (w *watcher) handle(idx uint64, data interface{}) {
 	if err != nil {
 		return
 	}
-	w.ch <- cs
+	// The consumer may have stopped reading (context cancelled); a bare send
+	// would block this handler and leak the watch-plan goroutine forever.
+	select {
+	case w.ch <- cs:
+	case <-w.exit:
+	}
 }
 
 func (w *watcher) Watch() <-chan *backend.Content {

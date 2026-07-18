@@ -1,4 +1,5 @@
 {
+  "api-key": "ENC(example-2026-07:L8bw4Q2IckZ242VL61+aewJChcKxH8O/qeY6a8HZiq8rEolStPSBt/y+cfAMO7Q=)",
   "recall-check-interval": 60,
   "queue-threshold": 400,
   "call-check-interval": 10,

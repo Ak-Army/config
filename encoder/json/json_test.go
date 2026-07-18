@@ -1,105 +1,90 @@
 package json
 
-import "testing"
+import (
+	"testing"
 
-func TestEncodeDecode(t *testing.T) {
+	"github.com/stretchr/testify/suite"
+)
+
+type JsonTestSuite struct {
+	suite.Suite
+}
+
+func TestJson(t *testing.T) {
+	suite.Run(t, new(JsonTestSuite))
+}
+
+func (s *JsonTestSuite) TestEncodeDecode() {
 	enc := New()
 	b, err := enc.Encode(map[string]int{"a": 1})
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.Require().NoError(err)
 	data, err := enc.DecodeData(b)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.Require().NoError(err)
 	var got int
-	if err := enc.Decode(data["a"], &got); err != nil {
-		t.Fatal(err)
-	}
-	if got != 1 {
-		t.Fatalf("want 1, got %d", got)
-	}
+	s.Require().NoError(enc.Decode(data["a"], &got))
+	s.Require().Equal(1, got)
 }
 
 // TestDecodeDataListBytes covers the []byte branch, which previously wrote
 // into a nil map and panicked.
-func TestDecodeDataListBytes(t *testing.T) {
+func (s *JsonTestSuite) TestDecodeDataListBytes() {
 	enc := New()
 	list, err := enc.DecodeDataList([]byte(`[{"name":"a","age":1},{"name":"b","age":2}]`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 2 {
-		t.Fatalf("want 2 items, got %d", len(list))
-	}
+	s.Require().NoError(err)
+	s.Require().Len(list, 2)
 	var name string
-	if err := enc.Decode(list[1]["name"], &name); err != nil {
-		t.Fatal(err)
-	}
-	if name != "b" {
-		t.Fatalf("want b, got %q", name)
-	}
+	s.Require().NoError(enc.Decode(list[1]["name"], &name))
+	s.Require().Equal("b", name)
 }
 
-func TestDecodeUnknownType(t *testing.T) {
-	if err := New().Decode(42, new(int)); err == nil {
-		t.Fatal("expected error for unknown data type")
-	}
+func (s *JsonTestSuite) TestDecodeUnknownType() {
+	s.Require().Error(New().Decode(42, new(int)), "expected error for unknown data type")
 }
 
 // TestDecodeDataNull mirrors the standard library: a JSON null decodes to an
 // empty (non-nil) object without an error.
-func TestDecodeDataNull(t *testing.T) {
+func (s *JsonTestSuite) TestDecodeDataNull() {
 	data, err := New().DecodeData([]byte(`null`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if data == nil || len(data) != 0 {
-		t.Fatalf("want empty non-nil map, got %#v", data)
-	}
+	s.Require().NoError(err)
+	s.Require().NotNil(data)
+	s.Require().Len(data, 0)
+}
+
+// TestDecodeDataEmptyKey ensures an empty-string key neither terminates the
+// object scan early nor drops the keys after it.
+func (s *JsonTestSuite) TestDecodeDataEmptyKey() {
+	data, err := New().DecodeData([]byte(`{"":1,"a":2}`))
+	s.Require().NoError(err)
+	s.Require().Len(data, 2)
+	var a int
+	s.Require().NoError(New().Decode(data["a"], &a))
+	s.Require().Equal(2, a)
 }
 
 // TestDecodeDataNotObject checks that a non-object value is rejected.
-func TestDecodeDataNotObject(t *testing.T) {
-	if _, err := New().DecodeData([]byte(`"a string"`)); err == nil {
-		t.Fatal("expected error for non-object value")
-	}
+func (s *JsonTestSuite) TestDecodeDataNotObject() {
+	_, err := New().DecodeData([]byte(`"a string"`))
+	s.Require().Error(err, "expected error for non-object value")
 }
 
 // TestDecodeDataNested verifies raw nested values survive a round trip and stay
 // decodable, which is what the loader relies on for nested structs.
-func TestDecodeDataNested(t *testing.T) {
+func (s *JsonTestSuite) TestDecodeDataNested() {
 	data, err := New().DecodeData([]byte(`{"n":{"key":"v"},"i":10}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.Require().NoError(err)
 	inner, err := New().DecodeData(data["n"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var s string
-	if err := New().Decode(inner["key"], &s); err != nil {
-		t.Fatal(err)
-	}
-	if s != "v" {
-		t.Fatalf("want v, got %q", s)
-	}
+	s.Require().NoError(err)
+	var str string
+	s.Require().NoError(New().Decode(inner["key"], &str))
+	s.Require().Equal("v", str)
 	var i int
-	if err := New().Decode(data["i"], &i); err != nil {
-		t.Fatal(err)
-	}
-	if i != 10 {
-		t.Fatalf("want 10, got %d", i)
-	}
+	s.Require().NoError(New().Decode(data["i"], &i))
+	s.Require().Equal(10, i)
 }
 
 // TestDecodeDataListEmpty ensures an empty array yields an empty result.
-func TestDecodeDataListEmpty(t *testing.T) {
+func (s *JsonTestSuite) TestDecodeDataListEmpty() {
 	list, err := New().DecodeDataList([]byte(`[]`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 0 {
-		t.Fatalf("want 0 items, got %d", len(list))
-	}
+	s.Require().NoError(err)
+	s.Require().Len(list, 0)
 }

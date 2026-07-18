@@ -17,6 +17,11 @@ type env struct {
 	defaults      string
 	watchInterval time.Duration
 	opts          backend.Options
+	// defaultsLoaded flips after the first successful Read. The first load
+	// must not override real environment variables (env wins over the
+	// defaults file), but reloads triggered by the watcher must override,
+	// otherwise a changed defaults file never takes effect.
+	defaultsLoaded bool
 }
 
 func New(opts ...Option) backend.Backend {
@@ -32,10 +37,14 @@ func New(opts ...Option) backend.Backend {
 
 func (e *env) Read() (*backend.Content, error) {
 	if e.defaults != "" {
-		err := godotenv.Load(e.defaults)
-		if err != nil {
+		load := godotenv.Load
+		if e.defaultsLoaded {
+			load = godotenv.Overload
+		}
+		if err := load(e.defaults); err != nil {
 			return nil, err
 		}
+		e.defaultsLoaded = true
 	}
 	s := &backend.Content{
 		Encoder:   e.opts.Encoder,

@@ -1,47 +1,42 @@
 package toml
 
-import "testing"
+import (
+	"testing"
 
-func TestDecodeData(t *testing.T) {
+	"github.com/stretchr/testify/suite"
+)
+
+type TomlTestSuite struct {
+	suite.Suite
+}
+
+func TestToml(t *testing.T) {
+	suite.Run(t, new(TomlTestSuite))
+}
+
+func (s *TomlTestSuite) TestDecodeData() {
 	enc := New()
 	data, err := enc.DecodeData([]byte("a = 1\nb = \"two\"\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.Require().NoError(err)
 	var b string
-	if err := enc.Decode(data["b"], &b); err != nil {
-		t.Fatal(err)
-	}
-	if b != "two" {
-		t.Fatalf("want two, got %q", b)
-	}
+	s.Require().NoError(enc.Decode(data["b"], &b))
+	s.Require().Equal("two", b)
 }
 
 // TestDecodeDataList covers arrays of tables. This path previously panicked
 // on a nil map and could not decode scalar fields (innerToml had no
 // UnmarshalJSON).
-func TestDecodeDataList(t *testing.T) {
+func (s *TomlTestSuite) TestDecodeDataList() {
 	enc := New()
 	data, err := enc.DecodeData([]byte("[[items]]\nname = \"a\"\nage = 1\n[[items]]\nname = \"b\"\nage = 2\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.Require().NoError(err)
 	list, err := enc.DecodeDataList(data["items"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 2 {
-		t.Fatalf("want 2 items, got %d", len(list))
-	}
+	s.Require().NoError(err)
+	s.Require().Len(list, 2)
 	var name string
-	if err := enc.Decode(list[0]["name"], &name); err != nil {
-		t.Fatal(err)
-	}
+	s.Require().NoError(enc.Decode(list[0]["name"], &name))
 	var age int
-	if err := enc.Decode(list[1]["age"], &age); err != nil {
-		t.Fatal(err)
-	}
-	if name != "a" || age != 2 {
-		t.Fatalf("want a/2, got %q/%d", name, age)
-	}
+	s.Require().NoError(enc.Decode(list[1]["age"], &age))
+	s.Require().Equal("a", name)
+	s.Require().Equal(2, age)
 }

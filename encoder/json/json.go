@@ -65,9 +65,13 @@ func (j jsonEncoder) DecodeData(data interface{}) (encoder.Data, error) {
 		iter.ReadNil()
 		return encoderData, iterErr(iter)
 	}
-	for field := iter.ReadObject(); field != ""; field = iter.ReadObject() {
-		encoderData[field] = json.RawMessage(iter.SkipAndReturnBytes())
-	}
+	// ReadMapCB instead of a ReadObject loop: ReadObject returns "" both for
+	// end-of-object and for a genuine empty-string key, which would silently
+	// drop the rest of the object.
+	iter.ReadMapCB(func(it *jsoniter.Iterator, field string) bool {
+		encoderData[field] = json.RawMessage(it.SkipAndReturnBytes())
+		return true
+	})
 	if err := iterErr(iter); err != nil {
 		return nil, err
 	}
@@ -87,9 +91,10 @@ func (j jsonEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 	var list []encoder.Data
 	for iter.ReadArray() {
 		item := make(encoder.Data)
-		for field := iter.ReadObject(); field != ""; field = iter.ReadObject() {
-			item[field] = json.RawMessage(iter.SkipAndReturnBytes())
-		}
+		iter.ReadMapCB(func(it *jsoniter.Iterator, field string) bool {
+			item[field] = json.RawMessage(it.SkipAndReturnBytes())
+			return true
+		})
 		list = append(list, item)
 	}
 	if err := iterErr(iter); err != nil {

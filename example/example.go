@@ -9,9 +9,14 @@ import (
 	"github.com/Ak-Army/config"
 	"github.com/Ak-Army/config/backend/env"
 	"github.com/Ak-Army/config/backend/file"
+	"github.com/Ak-Army/config/crypto"
+	"github.com/Ak-Army/config/crypto/aesgcm"
 )
 
 type Config struct {
+	// APIKey is stored as an ENC(...) value in config.json and decrypted on
+	// load; produce such values with cmd/configcrypt.
+	APIKey               string        `config:"api-key,encrypted"`
 	RecallCheckInterval  time.Duration `config:"recall-check-interval"`
 	QueueThreshold       int           `config:"queue-threshold"`
 	CallCheckInterval    time.Duration `config:"call-check-interval"`
@@ -79,6 +84,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	cr, err := crypto.New("config/config.keyring", func(key []byte) (crypto.Decrypter, error) {
+		return aesgcm.New(key)
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	loader.SetCrypto(cr)
 	c := config.NewStore[Config](&Config{})
 	if err := config.Load(loader, c); err != nil {
 		log.Fatal(err)

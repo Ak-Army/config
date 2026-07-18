@@ -110,13 +110,14 @@ zero value: `config.NewStore[Settings](&Settings{})`.
 ## The `config` tag
 
 ```
-`config:"<key>[,required][,backend=<name>]"`
+`config:"<key>[,required][,encrypted][,backend=<name>]"`
 ```
 
 | Token           | Meaning                                                                 |
 |-----------------|-------------------------------------------------------------------------|
 | `<key>`         | Key looked up in the source data.                                       |
 | `required`      | Load fails (via the snapshot error) if the key is not found.            |
+| `encrypted`     | The value may be an `ENC(...)` encrypted string; see [Encrypted values](#encrypted-values). |
 | `backend=<name>`| Only read this field from the source whose name matches `<name>`.       |
 | `-` (as `<key>`)| For a struct field: inline its fields into the parent. Otherwise: skip. |
 
@@ -125,6 +126,106 @@ the key names the sub-document. Fields with no tag are ignored.
 
 > **Note:** the option order matters — the key must come first
 > (`"key,required"`, not `"required,key"`).
+
+## Encrypted values
+
+Sensitive fields (passwords, API keys) can be stored encrypted in the config
+source. Mark the field with the `encrypted` tag option and store the value in
+the `ENC(<kid>:<base64>)` envelope, where `<kid>` names the key it was
+encrypted with:
+
+```go
+type Settings struct {
+	DBPass string `config:"db_pass,encrypted"`
+}
+```
+
+```json
+{ "db_pass": "ENC(prod-2026-07:4Yw3...base64...)" }
+```
+
+Keys live in a **key-ring file**: one `<kid>: <base64 32-byte key>` entry per
+line, blank lines and `#` comments allowed, the **first entry is the active
+key** (used for encryption; the others only decrypt):
+
+```
+# config.keyring
+prod-2026-07: 4Yw3...base64...   # active
+prod-2026-01: 9k2f...base64...
+```
+
+Configure a `crypto.Crypto` on the loader before calling `Load`. It wraps the
+key ring and the ENC(...) envelope handling, hiding the cipher implementation
+from the loader. `crypto.New` loads a key ring file and turns each raw key
+into a `crypto.Decrypter` with the key parser you supply — the cipher is
+pluggable, the `crypto/aesgcm` subpackage ships AES-256-GCM, but anything
+implementing `crypto.Decrypter` (Vault, KMS, ...) can be a key:
+
+```go
+import (
+	"github.com/Ak-Army/config/crypto"
+	"github.com/Ak-Army/config/crypto/aesgcm"
+)
+
+cr, err := crypto.New("config.keyring", func(key []byte) (crypto.Decrypter, error) {
+	return aesgcm.New(key)
+})
+if err != nil { ... }
+loader.SetCrypto(cr)
+```
+
+Rules:
+
+- `encrypted` applies only to leaf `string` / `*string` fields (including
+  named string types); on other field types the load reports an error, on
+  struct/list fields the option is ignored.
+- A tagged field whose value is **not** in `ENC(...)` form passes through as
+  plaintext — the same field can be encrypted in production and plain in a
+  local config.
+- An `ENC(...)` value without a configured crypto, with an unknown key id, or
+  one that fails to decrypt, surfaces as a per-field error via
+  `store.Config()`.
+- The feature is encoder- and backend-agnostic: it works with JSON, YAML and
+  TOML files, env and Consul sources alike.
+
+### Producing encrypted values
+
+Use the `configcrypt` helper (alias it as
+`go run github.com/Ak-Army/config/cmd/configcrypt`):
+
+```sh
+# generate a key and put it in the keyring
+echo "prod-2026-07: $(configcrypt -genkey)" > config.keyring
+
+# encrypt a value with the active key (positional arg or stdin)
+configcrypt -key config.keyring "s3cr3t"
+# -> ENC(prod-2026-07:4Yw3...base64...)
+
+# decrypt / inspect a value
+configcrypt -key config.keyring -d 'ENC(prod-2026-07:4Yw3...)'
+```
+
+Programmatic encryption is also available via `crypto.EncryptValue`.
+
+### Key rotation
+
+Every value names its key, so old and new keys can coexist while configs are
+re-encrypted:
+
+1. Generate a new key and add it as the **first** entry of the keyring (it
+   becomes the active key); keep the old entry below it.
+2. Deploy the keyring — services now decrypt both old and new values.
+3. Re-encrypt each config with the active key; only `ENC(...)` values change,
+   every other byte of the file stays untouched (works for JSON, YAML, TOML):
+
+   ```sh
+   configcrypt -key config.keyring -rekey -in config.json         # preview to stdout
+   configcrypt -key config.keyring -rekey -in config.json -write  # rewrite in place
+   ```
+
+   Single values can be re-keyed too: `configcrypt -key config.keyring -rekey 'ENC(...)'`.
+4. Once no config references the old key id (`grep -r 'ENC(prod-2026-01:'`),
+   remove its line from the keyring.
 
 ## Sources (backends)
 

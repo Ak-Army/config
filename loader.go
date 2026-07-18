@@ -10,6 +10,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/Ak-Army/config/backend"
+	"github.com/Ak-Army/config/crypto"
 	"github.com/Ak-Army/config/encoder"
 )
 
@@ -25,20 +26,22 @@ type Loader struct {
 	// snapshot type. It lets reloads (e.g. triggered by watchers) skip the
 	// tag parsing done by parseType and only rebind the reflect values.
 	structCache map[reflect.Type][]*fieldSpec
+	crypto      *crypto.Crypto
 }
 
 // fieldSpec is the cached, instance-independent description of one struct
 // field. It is derived from the struct type once (parseType) and reused for
 // every load, where bind turns it into a value-bound field.
 type fieldSpec struct {
-	index    int
-	name     string
-	key      string
-	required bool
-	isList   bool
-	source   string
-	handling handling
-	subSpecs []*fieldSpec
+	index     int
+	name      string
+	key       string
+	required  bool
+	encrypted bool
+	isList    bool
+	source    string
+	handling  handling
+	subSpecs  []*fieldSpec
 }
 
 // handling describes how a field is bound and resolved.
@@ -59,6 +62,7 @@ type field struct {
 	value     reflect.Value
 	origValue reflect.Value
 	required  bool
+	encrypted bool
 	isList    bool
 	source    string
 	subFields []*field
@@ -80,6 +84,14 @@ func NewLoader(ctx context.Context, sources ...backend.Backend) (*Loader, error)
 	return l, nil
 }
 
+// SetCrypto sets the crypto used to decode ENC(...) values of fields tagged
+// with the `encrypted` option. Call it before Load.
+func (l *Loader) SetCrypto(c *crypto.Crypto) {
+	l.mu.Lock()
+	l.crypto = c
+	l.mu.Unlock()
+}
+
 func (l *Loader) AddSource(sources ...backend.Backend) error {
 	var gerr []string
 	for _, s := range sources {
@@ -87,7 +99,9 @@ func (l *Loader) AddSource(sources ...backend.Backend) error {
 			gerr = append(gerr, err.Error())
 			continue
 		}
+		l.mu.Lock()
 		l.backend = append(l.backend, s)
+		l.mu.Unlock()
 	}
 	if len(gerr) > 0 {
 		return fmt.Errorf("source loading errors: %s", strings.Join(gerr, "\n"))
@@ -168,6 +182,7 @@ func (l *Loader) watch(s backend.Backend) error {
 		for {
 			select {
 			case <-l.ctx.Done():
+				w.Stop()
 				return
 			case content := <-ch:
 				l.mu.Lock()
@@ -293,6 +308,7 @@ func bind(specs []*fieldSpec, ref reflect.Value) []*field {
 		f.key = spec.key
 		f.origValue = originalValue
 		f.required = spec.required
+		f.encrypted = spec.encrypted
 		f.isList = spec.isList
 		f.source = spec.source
 		switch spec.handling {
@@ -335,6 +351,9 @@ func parseTagSpec(tag string, spec *fieldSpec) {
 		for _, opt := range opts {
 			if opt == "required" {
 				spec.required = true
+			}
+			if opt == "encrypted" {
+				spec.encrypted = true
 			}
 			if strings.HasPrefix(opt, "backend=") {
 				spec.source = opt[len("backend="):]
@@ -414,6 +433,13 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 					// leaking a stale "found" from a previous element.
 					subF.found = false
 					if err := l.getFieldData(subF, c, newData); err != nil {
+						// A missing key just leaves the subfield unset;
+						// a real decode/decrypt failure must not be
+						// swallowed, or e.g. a tampered encrypted value
+						// would silently load as a zero value.
+						if !errors.Is(err, notFoundError) {
+							return err
+						}
 						continue
 					}
 					f.value.Index(i).Field(a).Set(subF.value)
@@ -439,6 +465,9 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 			}
 			if err := l.getFieldData(subF, c, newData); err != nil {
 				f.value = origValue
+				if !errors.Is(err, notFoundError) {
+					return err
+				}
 				continue
 			}
 			if kind == reflect.Struct {
@@ -451,6 +480,9 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 		f.found = true
 		return nil
 	}
+	if f.encrypted {
+		return l.decodeEncrypted(f, c, v)
+	}
 	var to interface{}
 	if f.value.CanAddr() {
 		to = f.value.Addr().Interface()
@@ -459,6 +491,34 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 	}
 	if err := c.Encoder.Decode(v, to); err != nil {
 		return err
+	}
+	f.found = true
+	return nil
+}
+
+// decodeEncrypted resolves a leaf field tagged with the `encrypted` option.
+// The raw value is decoded into a string with the content's own encoder and
+// handed to the crypto, which decrypts ENC(...) values and passes plain
+// values through unchanged.
+func (l *Loader) decodeEncrypted(f *field, c *backend.Content, v interface{}) error {
+	var s string
+	if err := c.Encoder.Decode(v, &s); err != nil {
+		return err
+	}
+	s, err := l.crypto.DecryptValue(s)
+	if err != nil {
+		return fmt.Errorf("field '%s': %s", f.name, err)
+	}
+	target := f.value
+	switch {
+	case target.Kind() == reflect.Ptr && target.Type().Elem().Kind() == reflect.String:
+		p := reflect.New(target.Type().Elem())
+		p.Elem().SetString(s)
+		target.Set(p)
+	case target.Kind() == reflect.String:
+		target.SetString(s)
+	default:
+		return fmt.Errorf("field '%s': 'encrypted' option requires a string or *string field", f.name)
 	}
 	f.found = true
 	return nil

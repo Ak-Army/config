@@ -1,6 +1,7 @@
 package consul
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -71,7 +72,9 @@ func (c *consul) read(kv api.KVPairs) (*backend.Content, error) {
 			target = next
 		}
 		leafDir := path[len(path)-1]
-		target[leafDir] = v.Value
+		// Keep the raw value verbatim: a []byte would be base64-encoded by the
+		// JSON encoder, corrupting every value.
+		target[leafDir] = json.RawMessage(v.Value)
 	}
 	d, err := c.opts.Encoder.Encode(data)
 	if err != nil {

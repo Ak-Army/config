@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"github.com/Ak-Army/config/backend"
 	"github.com/Ak-Army/config/backend/env"
 	"github.com/Ak-Army/config/backend/file"
+	"github.com/Ak-Army/config/crypto"
+	"github.com/Ak-Army/config/crypto/aesgcm"
 	"github.com/Ak-Army/config/encoder/toml"
 	"github.com/Ak-Army/config/encoder/yaml"
 )
@@ -29,17 +32,17 @@ func TestConfig(t *testing.T) {
 	suite.Run(t, new(ConfigTestSuite))
 }
 
-func (suite *ConfigTestSuite) SetupTest() {
-	suite.ctx, suite.cancel = context.WithCancel(context.Background())
+func (s *ConfigTestSuite) SetupTest() {
+	s.ctx, s.cancel = context.WithCancel(context.Background())
 }
 
-func (suite *ConfigTestSuite) TearDownTest() {
-	suite.cancel()
-	for _, f := range suite.files {
-		suite.Nil(f.Close())
-		suite.Nil(os.Remove(f.Name()))
+func (s *ConfigTestSuite) TearDownTest() {
+	s.cancel()
+	for _, f := range s.files {
+		s.Nil(f.Close())
+		s.Nil(os.Remove(f.Name()))
 	}
-	suite.files = []*os.File{}
+	s.files = []*os.File{}
 }
 
 // snapshotHandler seeds a Store with a caller-supplied default for the tests.
@@ -57,7 +60,7 @@ func (h snapshotHandler[T]) Default() *T {
 
 func (snapshotHandler[T]) Set(*T) {}
 
-func (suite *ConfigTestSuite) TestLoad() {
+func (s *ConfigTestSuite) TestLoad() {
 	type nested struct {
 		Int    int    `config:"int"`
 		String string `config:"string"`
@@ -85,14 +88,14 @@ func (suite *ConfigTestSuite) TestLoad() {
 		Ignored         string
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"bool":true}`)).Name(),
+			s.createFileForTest([]byte(`{"bool":true}`)).Name(),
 		)),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{`+
+			s.createFileForTest([]byte(`{`+
 				fmt.Sprintf(`"int":%d,`, math.MaxInt64)+
 				fmt.Sprintf(`"int8":%d,`, math.MaxInt8)+
 				fmt.Sprintf(`"int16":%d,`, math.MaxInt16)+
@@ -101,7 +104,7 @@ func (suite *ConfigTestSuite) TestLoad() {
 				`}`)).Name(),
 		)),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{`+
+			s.createFileForTest([]byte(`{`+
 				fmt.Sprintf(`"uint":%d,`, math.MaxUint32)+
 				fmt.Sprintf(`"uint8":%d,`, math.MaxUint8)+
 				fmt.Sprintf(`"uint16":%d,`, math.MaxUint16)+
@@ -110,28 +113,28 @@ func (suite *ConfigTestSuite) TestLoad() {
 				`}`)).Name(),
 		)),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{`+
+			s.createFileForTest([]byte(`{`+
 				fmt.Sprintf(`"float32":%f,`, math.MaxFloat32)+
 				fmt.Sprintf(`"float64":%f`, math.MaxFloat64)+
 				`}`)).Name(),
 		)),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{`+
+			s.createFileForTest([]byte(`{`+
 				`"ptr": "ptr",`+
 				`"string": "string"`+
 				`}`)).Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	ptr := "ptr"
 	store := NewStore[testStruct](snapshotHandler[testStruct]{def: func() *testStruct {
 		return &testStruct{StructPtrNotNil: new(nested)}
 	}})
 	err = Load(loader, store)
-	suite.Nil(err, "Load got err")
+	s.Nil(err, "Load got err")
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal(testStruct{
+	s.Nil(cerr)
+	s.Equal(testStruct{
 		Bool:    true,
 		Int:     math.MaxInt64,
 		Int8:    math.MaxInt8,
@@ -158,20 +161,20 @@ func (suite *ConfigTestSuite) TestLoad() {
 	}, cfg)
 }
 
-func (suite *ConfigTestSuite) TestLoadRequired() {
+func (s *ConfigTestSuite) TestLoadRequired() {
 	type test struct {
 		Name string `config:"name,required"`
 	}
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	_, cerr := store.Config()
-	suite.NotNil(cerr)
+	s.NotNil(cerr)
 }
 
-func (suite *ConfigTestSuite) TestLoadOmitempty() {
+func (s *ConfigTestSuite) TestLoadOmitempty() {
 	type Test struct {
 		Hunyi string `config:"name,omitempty"`
 		Alma  string `config:"age,omitempty"`
@@ -179,160 +182,160 @@ func (suite *ConfigTestSuite) TestLoadOmitempty() {
 	type st struct {
 		Name []Test `config:"name,omitempty"`
 	}
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"name":[{"name":"asd","age":10}]}`)).Name(),
+			s.createFileForTest([]byte(`{"name":[{"name":"asd","age":10}]}`)).Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[st](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	_, cerr := store.Config()
-	suite.Nil(cerr)
+	s.Nil(cerr)
 }
 
-func (suite *ConfigTestSuite) TestLoadIgnored() {
+func (s *ConfigTestSuite) TestLoadIgnored() {
 	type test struct {
 		Name string `config:"-"`
 		Age  int    `config:"age"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"name":"name","age":10}`)).Name(),
+			s.createFileForTest([]byte(`{"name":"name","age":10}`)).Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal(10, cfg.Age)
-	suite.Empty(cfg.Name)
+	s.Nil(cerr)
+	s.Equal(10, cfg.Age)
+	s.Empty(cfg.Name)
 }
 
-func (suite *ConfigTestSuite) TestBackendTagOK() {
+func (s *ConfigTestSuite) TestBackendTagOK() {
 	type test struct {
 		Hunyi string `config:"hunyi,backend=store"`
 		Alma  string `config:"alma,required,backend=backendCalled"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"hunyi":"megvan"}`)).Name(),
+			s.createFileForTest([]byte(`{"hunyi":"megvan"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("store")),
 		),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"alma":"aaaaa"}`)).Name(),
+			s.createFileForTest([]byte(`{"alma":"aaaaa"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("backendNotCalled")),
 		),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"alma":"nan"}`)).Name(),
+			s.createFileForTest([]byte(`{"alma":"nan"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("backendCalled")),
 		),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
+	s.Nil(cerr)
 
-	suite.Equal("nan", cfg.Alma)
-	suite.Equal("megvan", cfg.Hunyi)
+	s.Equal("nan", cfg.Alma)
+	s.Equal("megvan", cfg.Hunyi)
 }
 
-func (suite *ConfigTestSuite) TestBackendTagNOK() {
+func (s *ConfigTestSuite) TestBackendTagNOK() {
 	type test struct {
 		Hunyi string `config:"hunyi,backend=store"`
 		Alma  string `config:"alma,required,backend=backendCalled"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"hunyi":"megvan"}`)).Name(),
+			s.createFileForTest([]byte(`{"hunyi":"megvan"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("store")),
 		),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"alma":"aaaaa"}`)).Name(),
+			s.createFileForTest([]byte(`{"alma":"aaaaa"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("backendNotCalled")),
 		),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"affs":"nan"}`)).Name(),
+			s.createFileForTest([]byte(`{"affs":"nan"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("backendCalled")),
 		),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	_, cerr := store.Config()
-	suite.EqualError(cerr, "required key 'alma' for field 'Alma' not found")
+	s.EqualError(cerr, "required key 'alma' for field 'Alma' not found")
 }
 
-func (suite *ConfigTestSuite) TestTagsBadRequired() {
+func (s *ConfigTestSuite) TestTagsBadRequired() {
 	type test struct {
 		Key string `config:"key,rrequiredd,backend=store"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"kkkk":"megvan"}`)).Name(),
+			s.createFileForTest([]byte(`{"kkkk":"megvan"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("store")),
 		),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
+	s.Nil(cerr)
 
-	suite.Equal("", cfg.Key)
+	s.Equal("", cfg.Key)
 }
 
-func (suite *ConfigTestSuite) TestTagsBadBackendValue() {
+func (s *ConfigTestSuite) TestTagsBadBackendValue() {
 	type test struct {
 		Key string `config:"key,backend=stor"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"key":"value"}`)).Name(),
+			s.createFileForTest([]byte(`{"key":"value"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("store")),
 		),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	_, cerr := store.Config()
-	suite.NotNil(cerr)
+	s.NotNil(cerr)
 }
 
-func (suite *ConfigTestSuite) TestNested() {
+func (s *ConfigTestSuite) TestNested() {
 	type nested struct {
 		Key string `config:"key"`
 	}
@@ -344,22 +347,22 @@ func (suite *ConfigTestSuite) TestNested() {
 		Nested *nested `config:"nested"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"int":10,"string":"string","key":"key","nested":{"key":"nested key"}}`)).Name(),
+			s.createFileForTest([]byte(`{"int":10,"string":"string","key":"key","nested":{"key":"nested key"}}`)).Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](snapshotHandler[test]{def: func() *test {
 		return &test{Nested: &nested{}}
 	}})
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal(test{
+	s.Nil(cerr)
+	s.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
@@ -369,7 +372,7 @@ func (suite *ConfigTestSuite) TestNested() {
 	}, cfg)
 }
 
-func (suite *ConfigTestSuite) TestNestedRequired() {
+func (s *ConfigTestSuite) TestNestedRequired() {
 	type nested struct {
 		Asd       string `config:"asd"`
 		NestedKey string `config:"key,required"`
@@ -382,22 +385,22 @@ func (suite *ConfigTestSuite) TestNestedRequired() {
 		Nested *nested `config:"nested"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"int":10,"string":"string","key":"key","nested":{"asd":"nested key"}}`)).Name(),
+			s.createFileForTest([]byte(`{"int":10,"string":"string","key":"key","nested":{"asd":"nested key"}}`)).Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](snapshotHandler[test]{def: func() *test {
 		return &test{Nested: &nested{}}
 	}})
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Error(cerr, "required key 'key' for field 'NestedKey' not found")
-	suite.Equal(test{
+	s.Error(cerr, "required key 'key' for field 'NestedKey' not found")
+	s.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
@@ -408,7 +411,7 @@ func (suite *ConfigTestSuite) TestNestedRequired() {
 	}, cfg)
 }
 
-func (suite *ConfigTestSuite) TestNestedYaml() {
+func (s *ConfigTestSuite) TestNestedYaml() {
 	type nested struct {
 		Key string `config:"key"`
 	}
@@ -420,26 +423,26 @@ func (suite *ConfigTestSuite) TestNestedYaml() {
 		Nested *nested `config:"nested"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`int: 10
+			s.createFileForTest([]byte(`int: 10
 string: string
 key: key
 nested:
   key: nested key`)).Name(),
 		), file.WithOption(backend.WithEncoder(yaml.New()))),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](snapshotHandler[test]{def: func() *test {
 		return &test{Nested: &nested{}}
 	}})
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal(test{
+	s.Nil(cerr)
+	s.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
@@ -449,7 +452,7 @@ nested:
 	}, cfg)
 }
 
-func (suite *ConfigTestSuite) TestNestedToml() {
+func (s *ConfigTestSuite) TestNestedToml() {
 	type nested struct {
 		Key string `config:"key"`
 	}
@@ -461,11 +464,11 @@ func (suite *ConfigTestSuite) TestNestedToml() {
 		Nested *nested `config:"nested"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`
+			s.createFileForTest([]byte(`
 int = 10
 string = "string"
 key = "key"
@@ -474,15 +477,15 @@ key = "key"
 `)).Name(),
 		), file.WithOption(backend.WithEncoder(toml.New()))),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](snapshotHandler[test]{def: func() *test {
 		return &test{Nested: &nested{}}
 	}})
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal(test{
+	s.Nil(cerr)
+	s.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
@@ -492,49 +495,49 @@ key = "key"
 	}, cfg)
 }
 
-func (suite *ConfigTestSuite) TestLoadEnv() {
+func (s *ConfigTestSuite) TestLoadEnv() {
 	type test struct {
 		Int    int    `config:"int"`
 		String string `config:"string"`
 		Key    string `config:"key"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		env.New(env.WithDefaults(
-			suite.createFileForTest([]byte(`
+			s.createFileForTest([]byte(`
 STRING="string"
 INT=10
 KEY="key"
 `)).Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal(test{
+	s.Nil(cerr)
+	s.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
 	}, cfg)
 }
 
-func (suite *ConfigTestSuite) TestLoadEnvWithStripPrefixes() {
+func (s *ConfigTestSuite) TestLoadEnvWithStripPrefixes() {
 	type test struct {
 		Int    int    `config:"int"`
 		String string `config:"string"`
 		Key    string `config:"key"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		env.New(env.WithDefaults(
-			suite.createFileForTest([]byte(`
+			s.createFileForTest([]byte(`
 AA_STRING="string"
 AA_INT=10
 AA_KEY="key"
@@ -542,72 +545,72 @@ BB_Key="aaaa"
 `)).Name(),
 		), env.WithStripPrefix("AA_")),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal(test{
+	s.Nil(cerr)
+	s.Equal(test{
 		Int:    10,
 		String: "string",
 		Key:    "key",
 	}, cfg)
 }
 
-func (suite *ConfigTestSuite) TestTagsBadTagsOrder() {
+func (s *ConfigTestSuite) TestTagsBadTagsOrder() {
 	type test struct {
 		Key string `config:"backend=store,key"`
 	}
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"key":"value"}`)).Name(),
+			s.createFileForTest([]byte(`{"key":"value"}`)).Name(),
 		),
 			file.WithOption(backend.WithName("store")),
 		),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
+	s.Nil(cerr)
 
-	suite.Equal("", cfg.Key)
+	s.Equal("", cfg.Key)
 }
 
-func (suite *ConfigTestSuite) TestWatch() {
+func (s *ConfigTestSuite) TestWatch() {
 	type test struct {
 		Name string `config:"name,required"`
 		Age  int    `config:"age,required"`
 	}
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
-	f := suite.createFileForTest([]byte(`{"name":"name","age":10}`))
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	f := s.createFileForTest([]byte(`{"name":"name","age":10}`))
 	err = loader.AddSource(
 		file.New(file.WithPath(
 			f.Name(),
 		), file.WithWatchInterval(1*time.Second),
 			file.WithOption(backend.WithWatcher())),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	_, cerr := store.Config()
-	suite.Nil(cerr)
+	s.Nil(cerr)
 	f.Seek(0, 0)
 	f.WriteString(`{"name":"name2","age":10}`)
 	f.Sync()
 	time.Sleep(4 * time.Second)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal("name2", cfg.Name)
+	s.Nil(cerr)
+	s.Equal("name2", cfg.Name)
 }
 
-func (suite *ConfigTestSuite) TestArray() {
+func (s *ConfigTestSuite) TestArray() {
 	type nested2 struct {
 		StringName string `config:"strings"`
 	}
@@ -621,25 +624,25 @@ func (suite *ConfigTestSuite) TestArray() {
 		Int        []nested `config:"int,required"`
 	}
 
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
-	f := suite.createFileForTest([]byte(`{"module":"name","int":[{"ints":10,"intpointer": 10,"nes":{"strings":"asd"}}, {"ints":11,"nes":{"strings":"qwe"}}]}`))
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	f := s.createFileForTest([]byte(`{"module":"name","int":[{"ints":10,"intpointer": 10,"nes":{"strings":"asd"}}, {"ints":11,"nes":{"strings":"qwe"}}]}`))
 	err = loader.AddSource(
 		file.New(file.WithPath(
 			f.Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal("asd", cfg.Int[0].Nested.StringName)
-	suite.Equal("qwe", cfg.Int[1].Nested.StringName)
+	s.Nil(cerr)
+	s.Equal("asd", cfg.Int[0].Nested.StringName)
+	s.Equal("qwe", cfg.Int[1].Nested.StringName)
 }
 
-func (suite *ConfigTestSuite) TestArrayYaml() {
+func (s *ConfigTestSuite) TestArrayYaml() {
 	type item struct {
 		Name string `config:"name"`
 		Age  int    `config:"age"`
@@ -647,11 +650,11 @@ func (suite *ConfigTestSuite) TestArrayYaml() {
 	type test struct {
 		Items []item `config:"items"`
 	}
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`items:
+			s.createFileForTest([]byte(`items:
   - name: a
     age: 1
   - name: b
@@ -659,20 +662,20 @@ func (suite *ConfigTestSuite) TestArrayYaml() {
 `)).Name(),
 		), file.WithOption(backend.WithEncoder(yaml.New()))),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Len(cfg.Items, 2)
-	suite.Equal("a", cfg.Items[0].Name)
-	suite.Equal(1, cfg.Items[0].Age)
-	suite.Equal("b", cfg.Items[1].Name)
-	suite.Equal(2, cfg.Items[1].Age)
+	s.Nil(cerr)
+	s.Len(cfg.Items, 2)
+	s.Equal("a", cfg.Items[0].Name)
+	s.Equal(1, cfg.Items[0].Age)
+	s.Equal("b", cfg.Items[1].Name)
+	s.Equal(2, cfg.Items[1].Age)
 }
 
-func (suite *ConfigTestSuite) TestArrayToml() {
+func (s *ConfigTestSuite) TestArrayToml() {
 	type item struct {
 		Name string `config:"name"`
 		Age  int    `config:"age"`
@@ -680,11 +683,11 @@ func (suite *ConfigTestSuite) TestArrayToml() {
 	type test struct {
 		Items []item `config:"items"`
 	}
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`
+			s.createFileForTest([]byte(`
 [[items]]
 name = "a"
 age = 1
@@ -694,52 +697,205 @@ age = 2
 `)).Name(),
 		), file.WithOption(backend.WithEncoder(toml.New()))),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Len(cfg.Items, 2)
-	suite.Equal("a", cfg.Items[0].Name)
-	suite.Equal(1, cfg.Items[0].Age)
-	suite.Equal("b", cfg.Items[1].Name)
-	suite.Equal(2, cfg.Items[1].Age)
+	s.Nil(cerr)
+	s.Len(cfg.Items, 2)
+	s.Equal("a", cfg.Items[0].Name)
+	s.Equal(1, cfg.Items[0].Age)
+	s.Equal("b", cfg.Items[1].Name)
+	s.Equal(2, cfg.Items[1].Age)
 }
 
 // TestPrecedence verifies that when several sources provide the same key and
 // no backend is pinned, the first registered source wins deterministically
 // (regardless of Go's random map iteration order).
-func (suite *ConfigTestSuite) TestPrecedence() {
+func (s *ConfigTestSuite) TestPrecedence() {
 	type test struct {
 		Key string `config:"key"`
 	}
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"key":"first"}`)).Name(),
+			s.createFileForTest([]byte(`{"key":"first"}`)).Name(),
 		), file.WithOption(backend.WithName("first"))),
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"key":"second"}`)).Name(),
+			s.createFileForTest([]byte(`{"key":"second"}`)).Name(),
 		), file.WithOption(backend.WithName("second"))),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 	store := NewStore[test](nil)
 	err = Load(loader, store)
-	suite.Nil(err)
+	s.Nil(err)
 	cfg, cerr := store.Config()
-	suite.Nil(cerr)
-	suite.Equal("first", cfg.Key)
+	s.Nil(cerr)
+	s.Equal("first", cfg.Key)
 }
 
-func (suite *ConfigTestSuite) createFileForTest(data []byte) *os.File {
+// testCrypto returns a deterministic-key crypto for the encrypted-value tests.
+func (s *ConfigTestSuite) testCrypto(firstByte byte) *crypto.Crypto {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	key[0] = firstByte
+	ring := s.createFileForTest([]byte("test: " + base64.StdEncoding.EncodeToString(key) + "\n"))
+	c, err := crypto.New(ring.Name(), func(key []byte) (crypto.Decrypter, error) {
+		return aesgcm.New(key)
+	})
+	s.Require().NoError(err)
+	return c
+}
+
+func (s *ConfigTestSuite) encryptForTest(c *crypto.Crypto, plaintext string) string {
+	encoded, err := c.EncryptValue(plaintext)
+	s.Require().NoError(err)
+	return encoded
+}
+
+func (s *ConfigTestSuite) TestLoadEncrypted() {
+	type nested struct {
+		Secret string `config:"secret,encrypted"`
+	}
+	type test struct {
+		Password  string  `config:"password,required,encrypted"`
+		Plain     string  `config:"plain,encrypted"`
+		PtrSecret *string `config:"ptr_secret,encrypted"`
+		Nested    *nested `config:"nested"`
+	}
+
+	cr := s.testCrypto(0)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	loader.SetCrypto(cr)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			s.createFileForTest([]byte(`{` +
+				`"password":"` + s.encryptForTest(cr, "s3cr3t") + `",` +
+				`"plain":"not encrypted",` +
+				`"ptr_secret":"` + s.encryptForTest(cr, "ptr secret") + `",` +
+				`"nested":{"secret":"` + s.encryptForTest(cr, "nested secret") + `"}` +
+				`}`)).Name(),
+		)),
+	)
+	s.Nil(err)
+	store := NewStore[test](snapshotHandler[test]{def: func() *test {
+		return &test{Nested: &nested{}}
+	}})
+	err = Load(loader, store)
+	s.Nil(err)
+	cfg, cerr := store.Config()
+	s.Nil(cerr)
+	s.Equal("s3cr3t", cfg.Password)
+	s.Equal("not encrypted", cfg.Plain)
+	s.Require().NotNil(cfg.PtrSecret)
+	s.Equal("ptr secret", *cfg.PtrSecret)
+	s.Equal("nested secret", cfg.Nested.Secret)
+}
+
+func (s *ConfigTestSuite) TestLoadEncryptedYaml() {
+	type test struct {
+		Password string `config:"password,encrypted"`
+	}
+
+	cr := s.testCrypto(0)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	loader.SetCrypto(cr)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			s.createFileForTest([]byte(`password: `+s.encryptForTest(cr, "s3cr3t"))).Name(),
+		), file.WithOption(backend.WithEncoder(yaml.New()))),
+	)
+	s.Nil(err)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
+	s.Nil(err)
+	cfg, cerr := store.Config()
+	s.Nil(cerr)
+	s.Equal("s3cr3t", cfg.Password)
+}
+
+func (s *ConfigTestSuite) TestLoadEncryptedNoDecrypter() {
+	type test struct {
+		Password string `config:"password,encrypted"`
+	}
+
+	cr := s.testCrypto(0)
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			s.createFileForTest([]byte(`{"password":"` + s.encryptForTest(cr, "s3cr3t") + `"}`)).Name(),
+		)),
+	)
+	s.Nil(err)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
+	s.Nil(err)
+	_, cerr := store.Config()
+	s.Require().NotNil(cerr)
+	s.Contains(cerr.Error(), "no decrypter configured")
+}
+
+func (s *ConfigTestSuite) TestLoadEncryptedWrongKey() {
+	type test struct {
+		Password string `config:"password,encrypted"`
+	}
+
+	cr := s.testCrypto(0)
+	other := s.testCrypto(1)
+
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	loader.SetCrypto(other)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			s.createFileForTest([]byte(`{"password":"` + s.encryptForTest(cr, "s3cr3t") + `"}`)).Name(),
+		)),
+	)
+	s.Nil(err)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
+	s.Nil(err)
+	_, cerr := store.Config()
+	s.Require().NotNil(cerr)
+	s.Contains(cerr.Error(), "decrypt")
+}
+
+func (s *ConfigTestSuite) TestLoadEncryptedNonStringField() {
+	type test struct {
+		Age int `config:"age,encrypted"`
+	}
+
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	loader.SetCrypto(s.testCrypto(0))
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			s.createFileForTest([]byte(`{"age":"10"}`)).Name(),
+		)),
+	)
+	s.Nil(err)
+	store := NewStore[test](nil)
+	err = Load(loader, store)
+	s.Nil(err)
+	_, cerr := store.Config()
+	s.Require().NotNil(cerr)
+	s.Contains(cerr.Error(), "requires a string or *string field")
+}
+
+func (s *ConfigTestSuite) createFileForTest(data []byte) *os.File {
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("file.%d", time.Now().UnixNano()))
 	fh, err := os.Create(path)
-	suite.Nil(err)
+	s.Nil(err)
 	_, err = fh.Write(data)
-	suite.Nil(err)
-	suite.files = append(suite.files, fh)
+	s.Nil(err)
+	s.files = append(s.files, fh)
 	return fh
 }
 

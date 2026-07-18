@@ -1,10 +1,51 @@
 package config
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
 	"time"
+
+	"github.com/stretchr/testify/suite"
 
 	"github.com/Ak-Army/config/backend/file"
 )
+
+type StoreTestSuite struct {
+	suite.Suite
+	files  []*os.File
+	cancel context.CancelFunc
+	ctx    context.Context
+}
+
+func TestStore(t *testing.T) {
+	suite.Run(t, new(StoreTestSuite))
+}
+
+func (s *StoreTestSuite) SetupTest() {
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+}
+
+func (s *StoreTestSuite) TearDownTest() {
+	s.cancel()
+	for _, f := range s.files {
+		s.Nil(f.Close())
+		s.Nil(os.Remove(f.Name()))
+	}
+	s.files = []*os.File{}
+}
+
+func (s *StoreTestSuite) createFileForTest(data []byte) *os.File {
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("file.%d", time.Now().UnixNano()))
+	fh, err := os.Create(path)
+	s.Nil(err)
+	_, err = fh.Write(data)
+	s.Nil(err)
+	s.files = append(s.files, fh)
+	return fh
+}
 
 type storeConfig struct {
 	Name    string        `config:"name"`
@@ -31,66 +72,66 @@ func (storeHandler) Set(c *storeConfig) {
 	c.Timeout *= time.Second
 }
 
-func (suite *ConfigTestSuite) TestStore() {
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+func (s *StoreTestSuite) TestStore() {
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"name":"cfg","timeout":5,"nested":{"value":7}}`)).Name(),
+			s.createFileForTest([]byte(`{"name":"cfg","timeout":5,"nested":{"value":7}}`)).Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 
 	store := NewStore[storeConfig](storeHandler{})
-	suite.Nil(Load(loader, store))
+	s.Nil(Load(loader, store))
 
 	cfg, err := store.Config()
-	suite.Nil(err)
-	suite.Equal("cfg", cfg.Name)
-	suite.Equal(5*time.Second, cfg.Timeout)
-	suite.Equal(7, cfg.Nested.Value)
+	s.Nil(err)
+	s.Equal("cfg", cfg.Name)
+	s.Equal(5*time.Second, cfg.Timeout)
+	s.Equal(7, cfg.Nested.Value)
 }
 
 // TestStoreDefaults checks that the defaults are applied when a key is absent
 // and that process runs even on a fresh (empty source) load.
-func (suite *ConfigTestSuite) TestStoreDefaults() {
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+func (s *StoreTestSuite) TestStoreDefaults() {
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 
 	store := NewStore[storeConfig](storeHandler{name: "default", timeout: 2})
-	suite.Nil(Load(loader, store))
+	s.Nil(Load(loader, store))
 
 	cfg, err := store.Config()
-	suite.Nil(err)
-	suite.Equal("default", cfg.Name)
-	suite.Equal(2*time.Second, cfg.Timeout)
+	s.Nil(err)
+	s.Equal("default", cfg.Name)
+	s.Equal(2*time.Second, cfg.Timeout)
 }
 
 // TestParseCacheReused verifies that reloading the same snapshot type parses
 // the struct only once: the cache keeps a single entry and later loads reuse
 // it, while each reload still resolves into a fresh, correct snapshot.
-func (suite *ConfigTestSuite) TestParseCacheReused() {
-	loader, err := NewLoader(suite.ctx)
-	suite.Nil(err)
+func (s *StoreTestSuite) TestParseCacheReused() {
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
 	err = loader.AddSource(
 		file.New(file.WithPath(
-			suite.createFileForTest([]byte(`{"name":"first","timeout":1,"nested":{"value":1}}`)).Name(),
+			s.createFileForTest([]byte(`{"name":"first","timeout":1,"nested":{"value":1}}`)).Name(),
 		)),
 	)
-	suite.Nil(err)
+	s.Nil(err)
 
 	store := NewStore[storeConfig](storeHandler{})
 
 	// Every Load returns a fresh *storeConfig from NewSnapshot (the watch
 	// scenario), yet parseType must run only once for the type.
-	suite.Nil(Load(loader, store))
-	suite.Nil(Load(loader, store))
+	s.Nil(Load(loader, store))
+	s.Nil(Load(loader, store))
 	loader.load(store)
 
-	suite.Len(loader.structCache, 1, "struct type should be parsed and cached exactly once")
+	s.Len(loader.structCache, 1, "struct type should be parsed and cached exactly once")
 
 	cfg, err := store.Config()
-	suite.Nil(err)
-	suite.Equal("first", cfg.Name)
-	suite.Equal(1, cfg.Nested.Value)
+	s.Nil(err)
+	s.Equal("first", cfg.Name)
+	s.Equal(1, cfg.Nested.Value)
 }
