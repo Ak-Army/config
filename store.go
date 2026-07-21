@@ -32,6 +32,7 @@ type Store[T any] struct {
 	config  T
 	err     error
 	handler Handler[T]
+	loaded  bool
 }
 
 // NewStore builds a Store for the configuration struct T, delegating snapshot
@@ -57,10 +58,15 @@ func (s *Store[T]) setSnapshot(snapshot interface{}, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	conf := snapshot.(*T)
-	if s.handler != nil {
-		s.handler.Set(conf)
+	if err == nil || !s.loaded {
+		if s.handler != nil {
+			s.handler.Set(conf)
+		}
+		s.config = *conf
 	}
-	s.config = *conf
+	if err == nil {
+		s.loaded = true
+	}
 	s.err = err
 }
 

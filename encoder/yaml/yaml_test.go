@@ -1,6 +1,7 @@
 package yaml
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -47,4 +48,20 @@ func (s *YamlTestSuite) TestDecodeDataList() {
 	var age int
 	s.Require().NoError(enc.Decode(list[0]["age"], &age))
 	s.Require().Equal(1, age)
+}
+
+// TestDecodeValue covers the single-value parse path for a native YAML scalar
+// and a native YAML mapping.
+func (s *YamlTestSuite) TestDecodeValue() {
+	enc := New()
+
+	v, err := enc.DecodeValue([]byte("localhost"))
+	s.Require().NoError(err)
+	s.Require().Equal("localhost", v)
+
+	v, err = enc.DecodeValue([]byte("name: cfg\nport: 5432"))
+	s.Require().NoError(err)
+	b, err := json.Marshal(v)
+	s.Require().NoError(err)
+	s.Require().JSONEq(`{"name":"cfg","port":5432}`, string(b))
 }

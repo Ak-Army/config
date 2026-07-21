@@ -1,6 +1,7 @@
 package json
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -87,4 +88,26 @@ func (s *JsonTestSuite) TestDecodeDataListEmpty() {
 	list, err := New().DecodeDataList([]byte(`[]`))
 	s.Require().NoError(err)
 	s.Require().Len(list, 0)
+}
+
+// TestDecodeValue covers the single-value parse path: a scalar, an object and a
+// large integer that must survive re-marshalling without float64 precision loss.
+func (s *JsonTestSuite) TestDecodeValue() {
+	enc := New()
+
+	v, err := enc.DecodeValue([]byte(`"localhost"`))
+	s.Require().NoError(err)
+	s.Require().Equal("localhost", v)
+
+	v, err = enc.DecodeValue([]byte(`{"name":"cfg","port":5432}`))
+	s.Require().NoError(err)
+	b, err := json.Marshal(v)
+	s.Require().NoError(err)
+	s.Require().JSONEq(`{"name":"cfg","port":5432}`, string(b))
+
+	v, err = enc.DecodeValue([]byte(`123456789012345678`))
+	s.Require().NoError(err)
+	b, err = json.Marshal(v)
+	s.Require().NoError(err)
+	s.Require().Equal("123456789012345678", string(b))
 }

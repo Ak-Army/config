@@ -1,6 +1,7 @@
 package json
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -101,6 +102,23 @@ func (j jsonEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 		return nil, err
 	}
 	return list, nil
+}
+
+// DecodeValue parses a single JSON value (object, array or scalar) into a plain
+// Go value. Numbers are kept as json.Number so they survive a later re-marshal
+// (e.g. by the consul backend) without float64 precision loss.
+func (j jsonEncoder) DecodeValue(data interface{}) (interface{}, error) {
+	d, ok := bytesOf(data)
+	if !ok {
+		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+	}
+	dec := json.NewDecoder(bytes.NewReader(d))
+	dec.UseNumber()
+	var v interface{}
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 // iterErr returns the iterator error, treating a clean end of input as success.

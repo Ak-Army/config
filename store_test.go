@@ -107,6 +107,101 @@ func (s *StoreTestSuite) TestStoreDefaults() {
 	s.Equal(2*time.Second, cfg.Timeout)
 }
 
+type storeRequiredConfig struct {
+	Name string `config:"name,required"`
+}
+
+// storeRequiredHandler seeds a default Name so the tests can tell a
+// defaults-only snapshot from a loaded one.
+type storeRequiredHandler struct{}
+
+func (storeRequiredHandler) Default() *storeRequiredConfig {
+	return &storeRequiredConfig{Name: "default"}
+}
+
+func (storeRequiredHandler) Set(*storeRequiredConfig) {}
+
+// TestFailedReloadKeepsConfig verifies the documented invariant that a bad
+// reload never replaces a good snapshot: after a successful load, a reload
+// missing a required key surfaces the error but keeps the last good config.
+func (s *StoreTestSuite) TestFailedReloadKeepsConfig() {
+	fh := s.createFileForTest([]byte(`{"name":"good"}`))
+	src := file.New(file.WithPath(fh.Name()))
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	s.Nil(loader.AddSource(src))
+
+	store := NewStore[storeRequiredConfig](storeRequiredHandler{})
+	s.Nil(Load(loader, store))
+	cfg, err := store.Config()
+	s.Nil(err)
+	s.Equal("good", cfg.Name)
+
+	// Simulate a watcher-triggered reload after the required key disappeared.
+	s.Nil(os.WriteFile(fh.Name(), []byte(`{}`), 0o644))
+	content, err := src.Read()
+	s.Nil(err)
+	loader.maps[src] = content
+	loader.load(store)
+
+	cfg, err = store.Config()
+	s.NotNil(err)
+	s.Equal("good", cfg.Name, "failed reload must keep the last good config")
+}
+
+// TestFirstLoadErrorStoresDefaults verifies that a failed first load still
+// exposes the handler defaults (plus whatever resolved) alongside the error.
+func (s *StoreTestSuite) TestFirstLoadErrorStoresDefaults() {
+	fh := s.createFileForTest([]byte(`{}`))
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	s.Nil(loader.AddSource(file.New(file.WithPath(fh.Name()))))
+
+	store := NewStore[storeRequiredConfig](storeRequiredHandler{})
+	s.Nil(Load(loader, store))
+
+	cfg, err := store.Config()
+	s.NotNil(err)
+	s.Equal("default", cfg.Name)
+}
+
+// countingHandler counts Set invocations so the test can tell how many times a
+// reload rebuilt the snapshot.
+type countingHandler struct {
+	sets *int
+}
+
+func (countingHandler) Default() *storeConfig { return &storeConfig{Nested: &storeNested{}} }
+
+func (h countingHandler) Set(*storeConfig) { *h.sets++ }
+
+// TestLoadTwiceRegistersOnce: a repeated Load with the same store must not
+// register it twice, or every watcher tick would rebuild the snapshot and run
+// Handler.Set once per duplicate.
+func (s *StoreTestSuite) TestLoadTwiceRegistersOnce() {
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			s.createFileForTest([]byte(`{"name":"cfg"}`)).Name(),
+		)),
+	)
+	s.Nil(err)
+
+	sets := 0
+	store := NewStore[storeConfig](countingHandler{sets: &sets})
+	s.Nil(Load(loader, store))
+	s.Nil(Load(loader, store))
+	s.Len(loader.backendWatcher, 1, "the same store must be registered once")
+
+	// Simulate one watcher tick: every registered watcher reloads once.
+	sets = 0
+	for _, w := range loader.backendWatcher {
+		loader.load(w)
+	}
+	s.Equal(1, sets, "one watcher tick must run Handler.Set exactly once")
+}
+
 // TestParseCacheReused verifies that reloading the same snapshot type parses
 // the struct only once: the cache keeps a single entry and later loads reuse
 // it, while each reload still resolves into a fresh, correct snapshot.

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -137,14 +138,48 @@ func rekeyFile(c *crypto.Crypto, path string, write bool, stdout, stderr io.Writ
 	}
 	fmt.Fprintf(stderr, "%s: %d value(s) re-encrypted, %d already using the active key\n", path, rekeyed, skipped)
 	if write {
-		info, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(path, out, info.Mode())
+		return writeFileAtomic(path, out)
 	}
 	_, err = stdout.Write(out)
 	return err
+}
+
+// writeFileAtomic replaces path via a temp file + rename in the same
+// directory, so a crash or full disk mid-write cannot truncate the original —
+// which here holds the only copy of the pre-rekey ciphertexts.
+func writeFileAtomic(path string, out []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".configcrypt-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	fail := func(err error) error {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if _, err := tmp.Write(out); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Chmod(info.Mode()); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 func readValue(args []string, stdin io.Reader) (string, error) {

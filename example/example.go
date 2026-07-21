@@ -42,10 +42,6 @@ type Amd2AppParams struct {
 	Filepath       string `config:"filepath"`
 }
 
-// configHandler supplies the defaults and post-processing for Config; it
-// implements config.Handler[Config].
-type configHandler struct{}
-
 // Default returns a freshly initialised Config holding the default values.
 func (*Config) Default() *Config {
 	return &Config{

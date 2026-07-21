@@ -118,7 +118,7 @@ zero value: `config.NewStore[Settings](&Settings{})`.
 | `<key>`         | Key looked up in the source data.                                       |
 | `required`      | Load fails (via the snapshot error) if the key is not found.            |
 | `encrypted`     | The value may be an `ENC(...)` encrypted string; see [Encrypted values](#encrypted-values). |
-| `backend=<name>`| Only read this field from the source whose name matches `<name>`.       |
+| `backend=<name>`| Only read this field from the source whose name matches `<name>`. May be repeated (`backend=a,backend=b`) to allow several sources. |
 | `-` (as `<key>`)| For a struct field: inline its fields into the parent. Otherwise: skip. |
 
 Nested `struct`, `*struct`, and `[]struct` fields are resolved recursively;
@@ -241,10 +241,15 @@ name matched by `backend=`, `backend.WithEncoder(...)` picks the encoder,
 
 ### Source precedence
 
-When several sources provide the same key and the field is **not** pinned with
-`backend=`, the **first registered source that has the key wins**
-(deterministic, in registration order). Pin a field to a specific source with
-`backend=<name>`.
+Resolution is **per field**: each field independently takes its value from the
+**first registered source that has the key** (deterministic, in registration
+order). Because of this, a nested `struct` can be assembled from several sources
+at once — each of its fields is filled from whichever source provides it.
+
+Pin a field to one or more sources with `backend=<name>` (repeat the option to
+allow several); the field is then read only from those, still in registration
+order. A pin on a nested `struct` or `[]struct` **locks all of its subfields**
+to the same sources — a subfield's own `backend=` cannot widen or change it.
 
 ## Encoders
 

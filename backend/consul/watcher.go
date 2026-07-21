@@ -13,16 +13,18 @@ import (
 type watcher struct {
 	c *consul
 
-	wp   *watch.Plan
-	ch   chan *backend.Content
-	exit chan bool
+	wp     *watch.Plan
+	ch     chan *backend.Content
+	exit   chan bool
+	logger xlog.Logger
 }
 
 func newWatcher(c *consul) (backend.Watcher, error) {
 	w := &watcher{
-		c:    c,
-		ch:   make(chan *backend.Content),
-		exit: make(chan bool),
+		c:      c,
+		ch:     make(chan *backend.Content),
+		exit:   make(chan bool),
+		logger: xlog.FromContext(c.opts.Context),
 	}
 	wp, err := watch.Parse(map[string]interface{}{"type": "keyprefix", "prefix": c.prefix})
 	if err != nil {
@@ -39,10 +41,14 @@ func (w *watcher) handle(idx uint64, data interface{}) {
 	}
 	kvs, ok := data.(api.KVPairs)
 	if !ok {
+		// A swallowed update means the app silently keeps stale config until
+		// the next KV change, so leave a trace.
+		w.logger.Warnf("consul watcher: unexpected data type %T, update dropped", data)
 		return
 	}
 	cs, err := w.c.read(kvs)
 	if err != nil {
+		w.logger.Errorf("consul watcher: read failed, update dropped: %s", err)
 		return
 	}
 	// The consumer may have stopped reading (context cancelled); a bare send
@@ -54,8 +60,7 @@ func (w *watcher) handle(idx uint64, data interface{}) {
 }
 
 func (w *watcher) Watch() <-chan *backend.Content {
-	logger := xlog.FromContext(w.c.opts.Context)
-	go w.wp.RunWithClientAndLogger(w.c.client, log.New(logger, "watch:", 0)) //lint:ignore SA1019 .
+	go w.wp.RunWithClientAndLogger(w.c.client, log.New(w.logger, "watch:", 0)) //lint:ignore SA1019 .
 
 	return w.ch
 }

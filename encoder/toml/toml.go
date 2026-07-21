@@ -38,8 +38,6 @@ func (d *innerToml) UnmarshalJSON(b []byte) error {
 
 func (t tomlEncoder) Encode(v interface{}) ([]byte, error) {
 	b := bytes.NewBuffer(nil)
-	defer b.Reset()
-
 	err := toml.NewEncoder(b).Encode(v)
 	if err != nil {
 		return nil, err
@@ -81,6 +79,19 @@ func (t tomlEncoder) DecodeData(data interface{}) (encoder.Data, error) {
 		}
 		return encoderData, nil
 	}
+	// json.RawMessage is the backend-neutral leaf representation (env, consul);
+	// []byte stays reserved for TOML source text.
+	if d, ok := data.(json.RawMessage); ok {
+		ret := make(map[string]json.RawMessage)
+		err := json.Unmarshal(d, &ret)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range ret {
+			encoderData[k] = v
+		}
+		return encoderData, nil
+	}
 	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
 func (t tomlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
@@ -114,7 +125,42 @@ func (t tomlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 		}
 		return encoderData, nil
 	}
+	if d, ok := data.(json.RawMessage); ok {
+		var rets []map[string]json.RawMessage
+		err := json.Unmarshal(d, &rets)
+		if err != nil {
+			return nil, err
+		}
+		encoderData := make([]encoder.Data, len(rets))
+		for i, ret := range rets {
+			encoderData[i] = encoder.Data{}
+			for k, v := range ret {
+				encoderData[i][k] = v
+			}
+		}
+		return encoderData, nil
+	}
 	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+}
+
+// DecodeValue parses a single TOML value into a plain Go value. TOML has no
+// bare-scalar document — the top level must be a table (key = value pairs) — so
+// a scalar or bare array returns an error; use YAML or JSON for scalar leaves.
+func (t tomlEncoder) DecodeValue(data interface{}) (interface{}, error) {
+	var raw []byte
+	switch d := data.(type) {
+	case json.RawMessage:
+		raw = d
+	case []byte:
+		raw = d
+	default:
+		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+	}
+	v := make(map[string]interface{})
+	if err := toml.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 func (t tomlEncoder) String() string {

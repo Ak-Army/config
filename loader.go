@@ -14,8 +14,6 @@ import (
 	"github.com/Ak-Army/config/encoder"
 )
 
-var notFoundError = errors.New("not found")
-
 type Loader struct {
 	mu             sync.Mutex
 	ctx            context.Context
@@ -39,7 +37,7 @@ type fieldSpec struct {
 	required  bool
 	encrypted bool
 	isList    bool
-	source    string
+	sources   []string
 	handling  handling
 	subSpecs  []*fieldSpec
 }
@@ -59,12 +57,13 @@ const (
 type field struct {
 	name      string
 	key       string
+	spec      *fieldSpec
 	value     reflect.Value
 	origValue reflect.Value
 	required  bool
 	encrypted bool
 	isList    bool
-	source    string
+	sources   []string
 	subFields []*field
 	found     bool
 }
@@ -94,6 +93,7 @@ func (l *Loader) SetCrypto(c *crypto.Crypto) {
 
 func (l *Loader) AddSource(sources ...backend.Backend) error {
 	var gerr []string
+	added := false
 	for _, s := range sources {
 		if err := l.syncSource(s); err != nil {
 			gerr = append(gerr, err.Error())
@@ -101,6 +101,16 @@ func (l *Loader) AddSource(sources ...backend.Backend) error {
 		}
 		l.mu.Lock()
 		l.backend = append(l.backend, s)
+		l.mu.Unlock()
+		added = true
+	}
+	// Re-resolve the already-registered stores so the new source's values take
+	// effect immediately, rather than only after an unrelated watcher event.
+	if added {
+		l.mu.Lock()
+		for _, c := range l.backendWatcher {
+			l.load(c)
+		}
 		l.mu.Unlock()
 	}
 	if len(gerr) > 0 {
@@ -126,7 +136,16 @@ func Load[T any](l *Loader, s *Store[T]) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.backendWatcher = append(l.backendWatcher, s)
+	registered := false
+	for _, w := range l.backendWatcher {
+		if w == loadable(s) {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		l.backendWatcher = append(l.backendWatcher, s)
+	}
 	l.loadInto(s, to)
 	return nil
 }
@@ -222,7 +241,7 @@ func parseType(t reflect.Type) []*fieldSpec {
 			} else {
 				spec.handling = handleStruct
 				spec.subSpecs = parseType(typ)
-				parseTagSpec(tag, spec)
+				spec.parseTagSpec(tag)
 			}
 			list = append(list, spec)
 		case reflect.Slice:
@@ -233,14 +252,14 @@ func parseType(t reflect.Type) []*fieldSpec {
 				spec.handling = handleListStruct
 				spec.isList = true
 				spec.subSpecs = parseType(typ.Elem())
-				parseTagSpec(tag, spec)
+				spec.parseTagSpec(tag)
 				list = append(list, spec)
 				continue
 			}
 			if tag == "-" {
 				continue
 			}
-			parseTagSpec(tag, spec)
+			spec.parseTagSpec(tag)
 			list = append(list, spec)
 		case reflect.Ptr:
 			if typ.Elem().Kind() == reflect.Struct {
@@ -250,7 +269,7 @@ func parseType(t reflect.Type) []*fieldSpec {
 				} else {
 					spec.handling = handlePtrStruct
 					spec.subSpecs = parseType(typ.Elem())
-					parseTagSpec(tag, spec)
+					spec.parseTagSpec(tag)
 				}
 				list = append(list, spec)
 				continue
@@ -258,13 +277,13 @@ func parseType(t reflect.Type) []*fieldSpec {
 			if tag == "-" {
 				continue
 			}
-			parseTagSpec(tag, spec)
+			spec.parseTagSpec(tag)
 			list = append(list, spec)
 		default:
 			if tag == "-" {
 				continue
 			}
-			parseTagSpec(tag, spec)
+			spec.parseTagSpec(tag)
 			list = append(list, spec)
 		}
 	}
@@ -294,23 +313,27 @@ func bind(specs []*fieldSpec, ref reflect.Value) []*field {
 		originalValue := ref.Field(spec.index)
 		switch spec.handling {
 		case handleFlattenStruct:
-			value := reflect.New(originalValue.Type()).Elem()
-			value.Set(originalValue)
-			list = append(list, bind(spec.subSpecs, value)...)
+			// Bind the promoted children directly to the real field so their
+			// decoded values land in the snapshot instead of a scratch copy.
+			list = append(list, bind(spec.subSpecs, originalValue)...)
 			continue
 		case handleFlattenPtr:
-			list = append(list, bind(spec.subSpecs, ptrElem(originalValue))...)
+			if originalValue.IsNil() {
+				originalValue.Set(reflect.New(originalValue.Type().Elem()))
+			}
+			list = append(list, bind(spec.subSpecs, originalValue.Elem())...)
 			continue
 		}
 		f := &backing[bi]
 		bi++
 		f.name = spec.name
 		f.key = spec.key
+		f.spec = spec
 		f.origValue = originalValue
 		f.required = spec.required
 		f.encrypted = spec.encrypted
 		f.isList = spec.isList
-		f.source = spec.source
+		f.sources = spec.sources
 		switch spec.handling {
 		case handleStruct:
 			value := reflect.New(originalValue.Type()).Elem()
@@ -318,10 +341,16 @@ func bind(specs []*fieldSpec, ref reflect.Value) []*field {
 			f.value = value
 			f.subFields = bind(spec.subSpecs, value)
 		case handlePtrStruct:
+			// Copy the pointer onto a scratch, allocating the pointee there
+			// when nil, so every subfield aliases f.value.Elem() and the real
+			// field is only replaced by resolve's found write-back.
 			value := reflect.New(originalValue.Type()).Elem()
 			value.Set(originalValue)
+			if value.IsNil() {
+				value.Set(reflect.New(originalValue.Type().Elem()))
+			}
 			f.value = value
-			f.subFields = bind(spec.subSpecs, ptrElem(originalValue))
+			f.subFields = bind(spec.subSpecs, value.Elem())
 		case handleListStruct:
 			f.value = originalValue
 			elem := reflect.New(originalValue.Type().Elem()).Elem()
@@ -334,75 +363,48 @@ func bind(specs []*fieldSpec, ref reflect.Value) []*field {
 	return list
 }
 
-// ptrElem returns the struct value a *struct field points at, allocating a
-// fresh one when the field is nil.
-func ptrElem(originalValue reflect.Value) reflect.Value {
-	if originalValue.IsNil() {
-		return reflect.New(originalValue.Type().Elem()).Elem()
-	}
-	return originalValue.Elem()
-}
-
-func parseTagSpec(tag string, spec *fieldSpec) {
+func (s *fieldSpec) parseTagSpec(tag string) {
 	if idx := strings.Index(tag, ","); idx != -1 {
-		spec.key = tag[:idx]
+		s.key = tag[:idx]
 		opts := strings.Split(tag[idx+1:], ",")
 
 		for _, opt := range opts {
 			if opt == "required" {
-				spec.required = true
+				s.required = true
 			}
 			if opt == "encrypted" {
-				spec.encrypted = true
+				s.encrypted = true
 			}
 			if strings.HasPrefix(opt, "backend=") {
-				spec.source = opt[len("backend="):]
+				s.sources = append(s.sources, opt[len("backend="):])
 			}
 		}
 	}
 }
 
+// candidate is one backend's view at the current nesting level: the content
+// (carrying the encoder used to decode its values) and the data map to look a
+// field's key up in.
+type candidate struct {
+	name    string
+	content *backend.Content
+	data    encoder.Data
+}
+
+// resolve populates the bound field tree from the registered backends. Fields
+// are resolved per leaf: each field independently picks the first backend (in
+// registration order) that provides its key, honouring the `backend=` pins, so
+// a nested struct can be filled from several backends at once.
 func (l *Loader) resolve(fields []*field) error {
 	var gerr []string
-	for _, f := range fields {
-		var backendFound bool
-		// Iterate the backends in registration order so that source
-		// precedence is deterministic (the first registered source that
-		// provides the key wins), rather than depending on Go's random
-		// map iteration order.
-		for _, s := range l.backend {
-			data, ok := l.maps[s]
-			if !ok {
-				continue
-			}
-			if f.source != "" && f.source != s.String() {
-				continue
-			}
-			backendFound = true
-			if err := l.getFieldData(f, data, data.Data); err != nil {
-				if !errors.Is(err, notFoundError) {
-					gerr = append(gerr, err.Error())
-				}
-				continue
-			}
-			break
-		}
-		if f.found {
-			f.origValue.Set(f.value)
-		}
-		if f.source != "" && !backendFound {
-			return fmt.Errorf("the backend: '%s' is not supported", f.source)
-		}
-		if f.required && !f.found {
-			return fmt.Errorf("required key '%s' for field '%s' not found", f.key, f.name)
-		}
-		if len(f.subFields) != 0 {
-			for _, subF := range f.subFields {
-				if subF.required && !subF.found {
-					return fmt.Errorf("required key '%s' for field '%s' not found", subF.key, subF.name)
-				}
-			}
-		}
+	if err := l.resolveFields(fields, l.topCandidates(), nil, &gerr); err != nil {
+		return err
+	}
+	// Validate required fields only after every field has been loaded and
+	// written back, so a missing required key never discards the values that
+	// did load into a partially populated struct.
+	if err := validateRequired(fields); err != nil {
+		return err
 	}
 	if len(gerr) > 0 {
 		return fmt.Errorf("data loading errors: %s", strings.Join(gerr, "\n"))
@@ -410,76 +412,118 @@ func (l *Loader) resolve(fields []*field) error {
 	return nil
 }
 
-func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) error {
-	v, found := data[f.key]
-	if !found {
-		return errors.WithMessage(notFoundError, fmt.Sprintf("data %s", f.key))
-	}
-
-	if len(f.subFields) != 0 {
-		if f.isList {
-			newDatas, err := c.Encoder.DecodeDataList(v)
-			if err != nil {
-				return err
-			}
-			val := reflect.MakeSlice(f.value.Type(), len(newDatas), len(newDatas))
-			f.value.Set(val)
-			for i, newData := range newDatas {
-				for a, subF := range f.subFields {
-					subF.value = reflect.New(subF.value.Type()).Elem()
-					f.subFields[a].value = subF.value
-					// Reset found for every element so that a required
-					// subfield is validated per list element instead of
-					// leaking a stale "found" from a previous element.
-					subF.found = false
-					if err := l.getFieldData(subF, c, newData); err != nil {
-						// A missing key just leaves the subfield unset;
-						// a real decode/decrypt failure must not be
-						// swallowed, or e.g. a tampered encrypted value
-						// would silently load as a zero value.
-						if !errors.Is(err, notFoundError) {
-							return err
-						}
-						continue
-					}
-					f.value.Index(i).Field(a).Set(subF.value)
-				}
-				for _, subF := range f.subFields {
-					if subF.required && !subF.found {
-						return fmt.Errorf("required key '%s' for field '%s' not found", subF.key, subF.name)
-					}
-				}
-			}
-			f.found = true
-			return nil
+// topCandidates builds the top-level candidate list from the registered
+// backends, in registration order so that source precedence is deterministic
+// (the first registered source that provides a key wins), rather than depending
+// on Go's random map iteration order.
+func (l *Loader) topCandidates() []candidate {
+	cands := make([]candidate, 0, len(l.backend))
+	for _, s := range l.backend {
+		c, ok := l.maps[s]
+		if !ok {
+			continue
 		}
-		newData, err := c.Encoder.DecodeData(v)
-		if err != nil {
+		cands = append(cands, candidate{name: s.String(), content: c, data: c.Data})
+	}
+	return cands
+}
+
+// backendRegistered reports whether a backend with the given name is registered.
+func (l *Loader) backendRegistered(name string) bool {
+	for _, s := range l.backend {
+		if s.String() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// effectiveSources returns the backends a field may be read from. A restriction
+// imposed by an ancestor (a struct or list pinned with `backend=`) wins and
+// cannot be widened or changed by a nested field, so a pinned struct forces all
+// of its subfields onto the same backends. Only when no ancestor restricts does
+// a field's own pins take effect.
+func effectiveSources(inherited, own []string) []string {
+	if len(inherited) > 0 {
+		return inherited
+	}
+	return own
+}
+
+// filterCandidates keeps only the candidates whose backend is named in sources,
+// preserving registration order. An empty sources means "any backend".
+func filterCandidates(cands []candidate, sources []string) []candidate {
+	if len(sources) == 0 {
+		return cands
+	}
+	out := make([]candidate, 0, len(cands))
+	for _, c := range cands {
+		for _, name := range sources {
+			if c.name == name {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// resolveFields resolves every field against the candidate backends visible at
+// this nesting level. inherited carries the source restriction imposed by an
+// enclosing pinned struct/list (nil at the top level).
+func (l *Loader) resolveFields(fields []*field, cands []candidate, inherited []string, gerr *[]string) error {
+	for _, f := range fields {
+		eff := effectiveSources(inherited, f.sources)
+		for _, name := range eff {
+			if !l.backendRegistered(name) {
+				return fmt.Errorf("the backend: '%s' is not supported", name)
+			}
+		}
+		if err := l.resolveField(f, filterCandidates(cands, eff), eff, gerr); err != nil {
 			return err
 		}
-		for a, subF := range f.subFields {
-			origValue := f.value
-			kind := f.value.Type().Kind()
-			if kind == reflect.Ptr && f.value.IsNil() {
-				f.value = reflect.New(f.value.Type().Elem())
-			}
-			if err := l.getFieldData(subF, c, newData); err != nil {
-				f.value = origValue
-				if !errors.Is(err, notFoundError) {
-					return err
-				}
-				continue
-			}
-			if kind == reflect.Struct {
-				f.value.Field(a).Set(subF.value)
-			} else {
-				f.value.Elem().Field(a).Set(subF.value)
-			}
-
+		if f.found {
+			f.origValue.Set(f.value)
 		}
-		f.found = true
+	}
+	return nil
+}
+
+// resolveField dispatches to the leaf, struct or list resolver for f.
+func (l *Loader) resolveField(f *field, cands []candidate, eff []string, gerr *[]string) error {
+	switch {
+	case len(f.subFields) != 0 && f.isList:
+		return l.resolveListField(f, cands, gerr)
+	case len(f.subFields) != 0:
+		return l.resolveStructField(f, cands, eff, gerr)
+	default:
+		l.resolveLeaf(f, cands, gerr)
 		return nil
 	}
+}
+
+// resolveLeaf decodes a scalar (or encrypted) field from the first candidate
+// that holds its key. A decode/decrypt failure is recorded but does not abort
+// the whole load, and it leaves the field unfound so a tampered encrypted value
+// is never silently loaded as a zero value.
+func (l *Loader) resolveLeaf(f *field, cands []candidate, gerr *[]string) {
+	for _, c := range cands {
+		v, ok := c.data[f.key]
+		if !ok {
+			continue
+		}
+		if err := l.decodeLeaf(f, c.content, v); err != nil {
+			*gerr = append(*gerr, err.Error())
+			continue
+		}
+		f.found = true
+		return
+	}
+}
+
+// decodeLeaf decodes a single leaf value into f, decrypting it first when the
+// field carries the `encrypted` option.
+func (l *Loader) decodeLeaf(f *field, c *backend.Content, v interface{}) error {
 	if f.encrypted {
 		return l.decodeEncrypted(f, c, v)
 	}
@@ -489,10 +533,91 @@ func (l *Loader) getFieldData(f *field, c *backend.Content, data encoder.Data) e
 	} else {
 		to = f.value.Interface()
 	}
-	if err := c.Encoder.Decode(v, to); err != nil {
-		return err
+	return c.Encoder.Decode(v, to)
+}
+
+// resolveStructField resolves a nested struct field. Every candidate that holds
+// the struct's key contributes its sub-document, so the subfields can be filled
+// from different backends (each honouring precedence) — unless the struct is
+// pinned, in which case eff locks the subfields to the same backends.
+func (l *Loader) resolveStructField(f *field, cands []candidate, eff []string, gerr *[]string) error {
+	childCands := make([]candidate, 0, len(cands))
+	for _, c := range cands {
+		v, ok := c.data[f.key]
+		if !ok {
+			continue
+		}
+		childData, err := c.content.Encoder.DecodeData(v)
+		if err != nil {
+			*gerr = append(*gerr, err.Error())
+			continue
+		}
+		childCands = append(childCands, candidate{name: c.name, content: c.content, data: childData})
+	}
+	if len(childCands) == 0 {
+		return nil
 	}
 	f.found = true
+	return l.resolveFields(f.subFields, childCands, eff, gerr)
+}
+
+// resolveListField resolves a []struct field. A list is taken whole from the
+// first candidate that holds its key (list elements cannot be merged across
+// backends), and each element's subfields are locked to that same backend.
+func (l *Loader) resolveListField(f *field, cands []candidate, gerr *[]string) error {
+	for _, c := range cands {
+		v, ok := c.data[f.key]
+		if !ok {
+			continue
+		}
+		newDatas, err := c.content.Encoder.DecodeDataList(v)
+		if err != nil {
+			*gerr = append(*gerr, err.Error())
+			continue
+		}
+		val := reflect.MakeSlice(f.value.Type(), len(newDatas), len(newDatas))
+		f.value.Set(val)
+		elemSources := []string{c.name}
+		for i, newData := range newDatas {
+			// Re-bind onto the real slice element so each subfield's origValue
+			// targets the right struct field (by spec.index), regardless of
+			// unexported/skipped/flattened fields. It also gives every element
+			// fresh found flags, so a required subfield is validated per element.
+			elemFields := bind(f.spec.subSpecs, f.value.Index(i))
+			elemCands := []candidate{{name: c.name, content: c.content, data: newData}}
+			if err := l.resolveFields(elemFields, elemCands, elemSources, gerr); err != nil {
+				return err
+			}
+			// Each element has its own fresh found flags, so a required subfield
+			// is validated per element — after write-back, so a missing required
+			// key keeps the values that did load.
+			if err := validateRequired(elemFields); err != nil {
+				return err
+			}
+		}
+		f.found = true
+		return nil
+	}
+	return nil
+}
+
+// validateRequired walks the bound field tree and returns the first required
+// field that was not found. getFieldData sets the found flags at every depth,
+// so a required field nested arbitrarily deep is validated too. List elements
+// are validated per element during decode (the template subFields of a list
+// only carry an "any element" found flag), so lists are not descended here.
+func validateRequired(fields []*field) error {
+	for _, f := range fields {
+		if f.required && !f.found {
+			return fmt.Errorf("required key '%s' for field '%s' not found", f.key, f.name)
+		}
+		if f.isList {
+			continue
+		}
+		if err := validateRequired(f.subFields); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

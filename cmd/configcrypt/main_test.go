@@ -107,6 +107,35 @@ func (s *ConfigCryptTestSuite) TestRunRekeyFile() {
 	s.Contains(stderr2.String(), "0 value(s) re-encrypted, 2 already")
 }
 
+// TestRekeyWritePreservesMode: the atomic temp+rename write must keep the
+// original file mode and leave no temp file behind.
+func (s *ConfigCryptTestSuite) TestRekeyWritePreservesMode() {
+	oldKey, newKey := s.genKey(), s.genKey()
+	oldRing := s.writeKeyring("v1: " + oldKey + "\n")
+	newRing := s.writeKeyring("v2: " + newKey + "\nv1: " + oldKey + "\n")
+
+	var out bytes.Buffer
+	s.Require().NoError(run([]string{"-key", oldRing, "pw"}, strings.NewReader(""), &out, &bytes.Buffer{}))
+	dir := s.T().TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	content := `{"pass":"` + strings.TrimSpace(out.String()) + `"}`
+	s.Require().NoError(os.WriteFile(configPath, []byte(content), 0o640))
+
+	s.Require().NoError(run([]string{"-key", newRing, "-rekey", "-in", configPath, "-write"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}))
+
+	info, err := os.Stat(configPath)
+	s.Require().NoError(err)
+	s.Equal(os.FileMode(0o640), info.Mode().Perm())
+	rewritten, err := os.ReadFile(configPath)
+	s.Require().NoError(err)
+	s.Contains(string(rewritten), "ENC(v2:")
+
+	entries, err := os.ReadDir(dir)
+	s.Require().NoError(err)
+	s.Require().Len(entries, 1, "no temp file must be left behind")
+	s.Equal("config.json", entries[0].Name())
+}
+
 func (s *ConfigCryptTestSuite) TestRunErrors() {
 	discard := func() (*bytes.Buffer, *bytes.Buffer) { return &bytes.Buffer{}, &bytes.Buffer{} }
 

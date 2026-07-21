@@ -85,6 +85,35 @@ func (y yamlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
 
+// DecodeValue parses a single YAML value (mapping, sequence or scalar) into a
+// plain Go value. yaml.v3 decodes mappings into map[string]interface{} and
+// scalars into their Go equivalents, so the result marshals cleanly into the
+// neutral json.RawMessage representation the loader consumes.
+func (y yamlEncoder) DecodeValue(data interface{}) (interface{}, error) {
+	raw, ok := rawBytes(data)
+	if !ok {
+		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
+	}
+	var v interface{}
+	if err := yaml.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// rawBytes normalises the raw representations DecodeValue accepts: a
+// json.RawMessage leaf (from another backend) or native []byte source text.
+func rawBytes(data interface{}) ([]byte, bool) {
+	switch d := data.(type) {
+	case json.RawMessage:
+		return d, true
+	case []byte:
+		return d, true
+	default:
+		return nil, false
+	}
+}
+
 func (y yamlEncoder) String() string {
 	return "yaml"
 }
