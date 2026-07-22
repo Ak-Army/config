@@ -3,6 +3,7 @@ package backend
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -37,6 +38,7 @@ type pollWatcher struct {
 	read     func() (*Content, error)
 	hash     string
 	exit     chan bool
+	stopOnce sync.Once
 }
 
 func (w *pollWatcher) Watch() <-chan *Content {
@@ -80,7 +82,9 @@ func (w *pollWatcher) Watch() <-chan *Content {
 }
 
 func (w *pollWatcher) Stop() {
-	close(w.exit)
+	w.stopOnce.Do(func() {
+		close(w.exit)
+	})
 }
 
 func (w *pollWatcher) updateHash() error {

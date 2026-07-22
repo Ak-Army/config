@@ -2,6 +2,7 @@ package consul
 
 import (
 	"log"
+	"sync"
 
 	"github.com/Ak-Army/xlog"
 	"github.com/hashicorp/consul/api"
@@ -13,10 +14,11 @@ import (
 type watcher struct {
 	c *consul
 
-	wp     *watch.Plan
-	ch     chan *backend.Content
-	exit   chan bool
-	logger xlog.Logger
+	wp       *watch.Plan
+	ch       chan *backend.Content
+	exit     chan bool
+	logger   xlog.Logger
+	stopOnce sync.Once
 }
 
 func newWatcher(c *consul) (backend.Watcher, error) {
@@ -66,6 +68,8 @@ func (w *watcher) Watch() <-chan *backend.Content {
 }
 
 func (w *watcher) Stop() {
-	w.wp.Stop()
-	close(w.exit)
+	w.stopOnce.Do(func() {
+		w.wp.Stop()
+		close(w.exit)
+	})
 }

@@ -1343,6 +1343,36 @@ func (s *ConfigTestSuite) TestNestedPinnedLocksSubfields() {
 	s.Equal("fromA", cfg.Nested.Key)
 }
 
+// TestListElementPinIgnored: a []struct is atomic to the backend that supplies
+// it, so an element subfield's own `backend=` pin is ignored (dropped at parse
+// time) and the value is read from the list's backend rather than silently
+// resolving to zero — even when the pinned backend is not registered at all.
+func (s *ConfigTestSuite) TestListElementPinIgnored() {
+	type item struct {
+		Name string `config:"name"`
+		Sec  string `config:"sec,backend=vault"` // own pin, must be ignored
+	}
+	type test struct {
+		Items []item `config:"items"`
+	}
+
+	loader, err := NewLoader(s.ctx)
+	s.Nil(err)
+	err = loader.AddSource(
+		file.New(file.WithPath(
+			s.createFileForTest([]byte(`{"items":[{"name":"a","sec":"fromFile"}]}`)).Name(),
+		), file.WithOption(backend.WithName("file"))),
+	)
+	s.Nil(err)
+	store := NewStore[test](nil)
+	s.Nil(Load(loader, store))
+	cfg, cerr := store.Config()
+	s.Nil(cerr)
+	s.Len(cfg.Items, 1)
+	s.Equal("a", cfg.Items[0].Name)
+	s.Equal("fromFile", cfg.Items[0].Sec)
+}
+
 func (s *ConfigTestSuite) createFileForTest(data []byte) *os.File {
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("file.%d", time.Now().UnixNano()))
 	fh, err := os.Create(path)

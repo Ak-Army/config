@@ -170,7 +170,7 @@ func (l *Loader) specsFor(t reflect.Type) []*fieldSpec {
 	if specs, ok := l.structCache[t]; ok {
 		return specs
 	}
-	specs := parseType(t)
+	specs := parseType(t, nil, false)
 	l.structCache[t] = specs
 	return specs
 }
@@ -219,7 +219,21 @@ func (l *Loader) watch(s backend.Backend) error {
 // parseType derives the instance-independent field description for a struct
 // type. The result depends only on the type (field names, tags, kinds), so it
 // is cached and reused across loads; bind turns it into value-bound fields.
-func parseType(t reflect.Type) []*fieldSpec {
+//
+// sources is the effective `backend=` restriction imposed by an enclosing
+// pinned struct/list, threaded down the recursion and folded into every spec:
+// parseTagSpec only applies a field's own pin when sources is still empty. This
+// guarantees the invariant "a subfield cannot override an ancestor's pin" at
+// spec-assembly time — each spec.sources already holds its final, effective
+// backends, so resolve/bind never have to reconcile ancestor pins again.
+//
+// locked marks the element subtree of a []struct. A list is taken whole from
+// one backend chosen at runtime (its elements cannot be merged across
+// backends), so an element subfield's own `backend=` pin is meaningless — the
+// data only exists in the list's backend. parseTagSpec therefore drops own pins
+// while locked, leaving sources empty so the field reads from the single
+// list-supplied candidate instead of resolving to zero.
+func parseType(t reflect.Type, sources []string, locked bool) []*fieldSpec {
 	var list []*fieldSpec
 	for i := 0; i < t.NumField(); i++ {
 		structField := t.Field(i)
@@ -229,19 +243,20 @@ func parseType(t reflect.Type) []*fieldSpec {
 		tag := structField.Tag.Get("config")
 		typ := structField.Type
 		spec := &fieldSpec{
-			index: i,
-			name:  structField.Name,
-			key:   tag,
+			index:   i,
+			name:    structField.Name,
+			key:     tag,
+			sources: sources,
 		}
 		switch typ.Kind() {
 		case reflect.Struct:
 			if tag == "-" {
 				spec.handling = handleFlattenStruct
-				spec.subSpecs = parseType(typ)
+				spec.subSpecs = parseType(typ, spec.sources, locked)
 			} else {
 				spec.handling = handleStruct
-				spec.subSpecs = parseType(typ)
-				spec.parseTagSpec(tag)
+				spec.parseTagSpec(tag, locked)
+				spec.subSpecs = parseType(typ, spec.sources, locked)
 			}
 			list = append(list, spec)
 		case reflect.Slice:
@@ -251,25 +266,27 @@ func parseType(t reflect.Type) []*fieldSpec {
 				}
 				spec.handling = handleListStruct
 				spec.isList = true
-				spec.subSpecs = parseType(typ.Elem())
-				spec.parseTagSpec(tag)
+				spec.parseTagSpec(tag, locked)
+				// The element subtree is locked: it is atomic to the backend
+				// that supplies the list at runtime, so own pins are dropped.
+				spec.subSpecs = parseType(typ.Elem(), spec.sources, true)
 				list = append(list, spec)
 				continue
 			}
 			if tag == "-" {
 				continue
 			}
-			spec.parseTagSpec(tag)
+			spec.parseTagSpec(tag, locked)
 			list = append(list, spec)
 		case reflect.Ptr:
 			if typ.Elem().Kind() == reflect.Struct {
 				if tag == "-" {
 					spec.handling = handleFlattenPtr
-					spec.subSpecs = parseType(typ.Elem())
+					spec.subSpecs = parseType(typ.Elem(), spec.sources, locked)
 				} else {
 					spec.handling = handlePtrStruct
-					spec.subSpecs = parseType(typ.Elem())
-					spec.parseTagSpec(tag)
+					spec.parseTagSpec(tag, locked)
+					spec.subSpecs = parseType(typ.Elem(), spec.sources, locked)
 				}
 				list = append(list, spec)
 				continue
@@ -277,13 +294,13 @@ func parseType(t reflect.Type) []*fieldSpec {
 			if tag == "-" {
 				continue
 			}
-			spec.parseTagSpec(tag)
+			spec.parseTagSpec(tag, locked)
 			list = append(list, spec)
 		default:
 			if tag == "-" {
 				continue
 			}
-			spec.parseTagSpec(tag)
+			spec.parseTagSpec(tag, locked)
 			list = append(list, spec)
 		}
 	}
@@ -352,9 +369,10 @@ func bind(specs []*fieldSpec, ref reflect.Value) []*field {
 			f.value = value
 			f.subFields = bind(spec.subSpecs, value.Elem())
 		case handleListStruct:
+			// No template bind: resolveListField re-binds each element from
+			// spec.subSpecs, so a throwaway template here would only waste an
+			// allocation per load. f.isList alone flags the list to resolveField.
 			f.value = originalValue
-			elem := reflect.New(originalValue.Type().Elem()).Elem()
-			f.subFields = bind(spec.subSpecs, elem)
 		default: // handleScalar: decode straight into the target field.
 			f.value = originalValue
 		}
@@ -363,7 +381,8 @@ func bind(specs []*fieldSpec, ref reflect.Value) []*field {
 	return list
 }
 
-func (s *fieldSpec) parseTagSpec(tag string) {
+func (s *fieldSpec) parseTagSpec(tag string, locked bool) {
+	isEmpty := len(s.sources) == 0
 	if idx := strings.Index(tag, ","); idx != -1 {
 		s.key = tag[:idx]
 		opts := strings.Split(tag[idx+1:], ",")
@@ -376,7 +395,13 @@ func (s *fieldSpec) parseTagSpec(tag string) {
 				s.encrypted = true
 			}
 			if strings.HasPrefix(opt, "backend=") {
-				s.sources = append(s.sources, opt[len("backend="):])
+				// A field's own pin applies only when no ancestor pin is in
+				// effect (isEmpty) and the field is not inside a []struct
+				// element (locked), where the element is atomic to the list's
+				// backend and an own pin could never find data.
+				if isEmpty && !locked {
+					s.sources = append(s.sources, opt[len("backend="):])
+				}
 			}
 		}
 	}
@@ -396,8 +421,16 @@ type candidate struct {
 // registration order) that provides its key, honouring the `backend=` pins, so
 // a nested struct can be filled from several backends at once.
 func (l *Loader) resolve(fields []*field) error {
+	cands := make([]candidate, 0, len(l.backend))
+	for _, s := range l.backend {
+		c, ok := l.maps[s]
+		if !ok {
+			continue
+		}
+		cands = append(cands, candidate{name: s.String(), content: c, data: c.Data})
+	}
 	var gerr []string
-	if err := l.resolveFields(fields, l.topCandidates(), nil, &gerr); err != nil {
+	if err := l.resolveFields(fields, cands, &gerr); err != nil {
 		return err
 	}
 	// Validate required fields only after every field has been loaded and
@@ -412,22 +445,6 @@ func (l *Loader) resolve(fields []*field) error {
 	return nil
 }
 
-// topCandidates builds the top-level candidate list from the registered
-// backends, in registration order so that source precedence is deterministic
-// (the first registered source that provides a key wins), rather than depending
-// on Go's random map iteration order.
-func (l *Loader) topCandidates() []candidate {
-	cands := make([]candidate, 0, len(l.backend))
-	for _, s := range l.backend {
-		c, ok := l.maps[s]
-		if !ok {
-			continue
-		}
-		cands = append(cands, candidate{name: s.String(), content: c, data: c.Data})
-	}
-	return cands
-}
-
 // backendRegistered reports whether a backend with the given name is registered.
 func (l *Loader) backendRegistered(name string) bool {
 	for _, s := range l.backend {
@@ -436,18 +453,6 @@ func (l *Loader) backendRegistered(name string) bool {
 		}
 	}
 	return false
-}
-
-// effectiveSources returns the backends a field may be read from. A restriction
-// imposed by an ancestor (a struct or list pinned with `backend=`) wins and
-// cannot be widened or changed by a nested field, so a pinned struct forces all
-// of its subfields onto the same backends. Only when no ancestor restricts does
-// a field's own pins take effect.
-func effectiveSources(inherited, own []string) []string {
-	if len(inherited) > 0 {
-		return inherited
-	}
-	return own
 }
 
 // filterCandidates keeps only the candidates whose backend is named in sources,
@@ -469,17 +474,29 @@ func filterCandidates(cands []candidate, sources []string) []candidate {
 }
 
 // resolveFields resolves every field against the candidate backends visible at
-// this nesting level. inherited carries the source restriction imposed by an
-// enclosing pinned struct/list (nil at the top level).
-func (l *Loader) resolveFields(fields []*field, cands []candidate, inherited []string, gerr *[]string) error {
+// this nesting level. Each field's effective `backend=` sources are already
+// baked into f.sources by parseType (an ancestor pin has overridden any own
+// pin), so resolve just filters the candidates by them: the filter is the lock.
+// An empty f.sources filters to every candidate (a no-op), a non-empty one
+// narrows to exactly the pinned backends — including inside []struct elements,
+// whose candidate list is already the single backend that supplied the list.
+func (l *Loader) resolveFields(fields []*field, cands []candidate, gerr *[]string) error {
 	for _, f := range fields {
-		eff := effectiveSources(inherited, f.sources)
-		for _, name := range eff {
+		unsupported := false
+		for _, name := range f.sources {
 			if !l.backendRegistered(name) {
-				return fmt.Errorf("the backend: '%s' is not supported", name)
+				// Record and skip this field instead of aborting the whole
+				// load: one misconfigured pin must not discard every other
+				// field's value. The error still surfaces via gerr.
+				*gerr = append(*gerr, fmt.Sprintf("the backend: '%s' is not supported", name))
+				unsupported = true
+				break
 			}
 		}
-		if err := l.resolveField(f, filterCandidates(cands, eff), eff, gerr); err != nil {
+		if unsupported {
+			continue
+		}
+		if err := l.resolveField(f, filterCandidates(cands, f.sources), gerr); err != nil {
 			return err
 		}
 		if f.found {
@@ -490,12 +507,12 @@ func (l *Loader) resolveFields(fields []*field, cands []candidate, inherited []s
 }
 
 // resolveField dispatches to the leaf, struct or list resolver for f.
-func (l *Loader) resolveField(f *field, cands []candidate, eff []string, gerr *[]string) error {
+func (l *Loader) resolveField(f *field, cands []candidate, gerr *[]string) error {
 	switch {
-	case len(f.subFields) != 0 && f.isList:
+	case f.isList:
 		return l.resolveListField(f, cands, gerr)
 	case len(f.subFields) != 0:
-		return l.resolveStructField(f, cands, eff, gerr)
+		return l.resolveStructField(f, cands, gerr)
 	default:
 		l.resolveLeaf(f, cands, gerr)
 		return nil
@@ -539,8 +556,9 @@ func (l *Loader) decodeLeaf(f *field, c *backend.Content, v interface{}) error {
 // resolveStructField resolves a nested struct field. Every candidate that holds
 // the struct's key contributes its sub-document, so the subfields can be filled
 // from different backends (each honouring precedence) — unless the struct is
-// pinned, in which case eff locks the subfields to the same backends.
-func (l *Loader) resolveStructField(f *field, cands []candidate, eff []string, gerr *[]string) error {
+// pinned, in which case the subfields' baked sources already lock them to the
+// same backends.
+func (l *Loader) resolveStructField(f *field, cands []candidate, gerr *[]string) error {
 	childCands := make([]candidate, 0, len(cands))
 	for _, c := range cands {
 		v, ok := c.data[f.key]
@@ -558,12 +576,15 @@ func (l *Loader) resolveStructField(f *field, cands []candidate, eff []string, g
 		return nil
 	}
 	f.found = true
-	return l.resolveFields(f.subFields, childCands, eff, gerr)
+	return l.resolveFields(f.subFields, childCands, gerr)
 }
 
 // resolveListField resolves a []struct field. A list is taken whole from the
 // first candidate that holds its key (list elements cannot be merged across
-// backends), and each element's subfields are locked to that same backend.
+// backends), and each element's subfields are locked to that same backend:
+// elemCands below holds only that one candidate, and the element subSpecs were
+// parsed with locked=true so a subfield's own pin was already dropped (it could
+// never find data off the list's backend).
 func (l *Loader) resolveListField(f *field, cands []candidate, gerr *[]string) error {
 	for _, c := range cands {
 		v, ok := c.data[f.key]
@@ -577,15 +598,17 @@ func (l *Loader) resolveListField(f *field, cands []candidate, gerr *[]string) e
 		}
 		val := reflect.MakeSlice(f.value.Type(), len(newDatas), len(newDatas))
 		f.value.Set(val)
-		elemSources := []string{c.name}
 		for i, newData := range newDatas {
 			// Re-bind onto the real slice element so each subfield's origValue
 			// targets the right struct field (by spec.index), regardless of
 			// unexported/skipped/flattened fields. It also gives every element
 			// fresh found flags, so a required subfield is validated per element.
 			elemFields := bind(f.spec.subSpecs, f.value.Index(i))
+			// elemCands is the single backend that supplied the list; because
+			// the element subSpecs are locked (own pins dropped at parse time),
+			// every subfield filters to this one candidate.
 			elemCands := []candidate{{name: c.name, content: c.content, data: newData}}
-			if err := l.resolveFields(elemFields, elemCands, elemSources, gerr); err != nil {
+			if err := l.resolveFields(elemFields, elemCands, gerr); err != nil {
 				return err
 			}
 			// Each element has its own fresh found flags, so a required subfield
