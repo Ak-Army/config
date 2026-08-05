@@ -3,6 +3,7 @@ module github.com/Ak-Army/config
 go 1.26
 
 require (
+	github.com/Ak-Army/cli v1.0.2
 	github.com/Ak-Army/xlog v1.5.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/hashicorp/consul/api v1.34.4

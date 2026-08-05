@@ -1,3 +1,5 @@
+github.com/Ak-Army/cli v1.0.2 h1:FnIzzxHUUQRVYtgBU8zclLsezkQPTOeHihvXoChpJMo=
+github.com/Ak-Army/cli v1.0.2/go.mod h1:bf293Imo2I/HV7AsaNl8bxlm4zAqweujywqZFZhsAt0=
 github.com/Ak-Army/xlog v1.5.0 h1:OmIliNqnX5IJG1mOmvlwljbaOSxJrye6bFuQxG1xzTo=
 github.com/Ak-Army/xlog v1.5.0/go.mod h1:zvyNMffqBQPGevDqeECe20PaGrSVltOdeUrqmX7/0UM=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
