@@ -23,8 +23,18 @@ type Loader struct {
 	// structCache holds the parsed, instance-independent description of a
 	// snapshot type. It lets reloads (e.g. triggered by watchers) skip the
 	// tag parsing done by parseType and only rebind the reflect values.
-	structCache map[reflect.Type][]*fieldSpec
+	structCache map[specKey][]*fieldSpec
 	crypto      *crypto.Crypto
+}
+
+// specKey identifies a cached spec tree. The same struct type yields different
+// specs depending on the restrictions it is parsed under — a SubConfig target
+// inherits the pin and the list-element lock of the field it was captured from
+// — so both are part of the key.
+type specKey struct {
+	t      reflect.Type
+	pin    string
+	locked bool
 }
 
 // fieldSpec is the cached, instance-independent description of one struct
@@ -37,9 +47,13 @@ type fieldSpec struct {
 	required  bool
 	encrypted bool
 	isList    bool
-	sources   []string
-	handling  handling
-	subSpecs  []*fieldSpec
+	// locked records whether the field sits in a []struct element subtree. Only
+	// a SubConfig field needs it, to parse its deferred target under the same
+	// restriction the element subtree was parsed with.
+	locked   bool
+	sources  []string
+	handling handling
+	subSpecs []*fieldSpec
 }
 
 // handling describes how a field is bound and resolved.
@@ -52,6 +66,7 @@ const (
 	handleListStruct                    // []struct
 	handleFlattenStruct                 // tag == "-" struct: children promoted
 	handleFlattenPtr                    // tag == "-" *struct: children promoted
+	handleSubConfig                     // SubConfig / *SubConfig: sub-document captured, decoded later
 )
 
 type field struct {
@@ -73,7 +88,7 @@ func NewLoader(ctx context.Context, sources ...backend.Backend) (*Loader, error)
 		backend:     sources,
 		ctx:         ctx,
 		maps:        make(map[backend.Backend]*backend.Content),
-		structCache: make(map[reflect.Type][]*fieldSpec),
+		structCache: make(map[specKey][]*fieldSpec),
 	}
 	for _, s := range l.backend {
 		if err := l.syncSource(s); err != nil {
@@ -159,19 +174,22 @@ func (l *Loader) load(c loadable) {
 // It must be called with l.mu held.
 func (l *Loader) loadInto(c loadable, to interface{}) {
 	ref := reflect.ValueOf(to).Elem()
-	fields := bind(l.specsFor(ref.Type()), ref)
+	fields := bind(l.specsFor(ref.Type(), nil, false), ref)
 	err := l.resolve(fields)
 	c.setSnapshot(to, err)
 }
 
-// specsFor returns the cached field description for t, parsing it on the first
-// use. It must be called with l.mu held.
-func (l *Loader) specsFor(t reflect.Type) []*fieldSpec {
-	if specs, ok := l.structCache[t]; ok {
+// specsFor returns the cached field description for t parsed under the given
+// restrictions, parsing it on the first use. A snapshot type is parsed with no
+// restriction (nil sources, unlocked); a SubConfig target inherits both from the
+// field the sub-document was captured from. It must be called with l.mu held.
+func (l *Loader) specsFor(t reflect.Type, sources []string, locked bool) []*fieldSpec {
+	key := specKey{t: t, pin: strings.Join(sources, ","), locked: locked}
+	if specs, ok := l.structCache[key]; ok {
 		return specs
 	}
-	specs := parseType(t, nil, false)
-	l.structCache[t] = specs
+	specs := parseType(t, sources, locked)
+	l.structCache[key] = specs
 	return specs
 }
 
@@ -250,6 +268,14 @@ func parseType(t reflect.Type, sources []string, locked bool) []*fieldSpec {
 		}
 		switch typ.Kind() {
 		case reflect.Struct:
+			if typ == subConfigType {
+				if tag == "-" {
+					continue
+				}
+				spec.markSubConfig(tag, locked)
+				list = append(list, spec)
+				continue
+			}
 			if tag == "-" {
 				spec.handling = handleFlattenStruct
 				spec.subSpecs = parseType(typ, spec.sources, locked)
@@ -279,6 +305,14 @@ func parseType(t reflect.Type, sources []string, locked bool) []*fieldSpec {
 			spec.parseTagSpec(tag, locked)
 			list = append(list, spec)
 		case reflect.Ptr:
+			if typ.Elem() == subConfigType {
+				if tag == "-" {
+					continue
+				}
+				spec.markSubConfig(tag, locked)
+				list = append(list, spec)
+				continue
+			}
 			if typ.Elem().Kind() == reflect.Struct {
 				if tag == "-" {
 					spec.handling = handleFlattenPtr
@@ -381,6 +415,15 @@ func bind(specs []*fieldSpec, ref reflect.Value) []*field {
 	return list
 }
 
+// markSubConfig turns the spec into a deferred sub-document field. The parser
+// stops here: a SubConfig holds a whole document whose shape is only known when
+// the application loads it into a target, so there are no subSpecs to derive.
+func (s *fieldSpec) markSubConfig(tag string, locked bool) {
+	s.handling = handleSubConfig
+	s.parseTagSpec(tag, locked)
+	s.locked = locked
+}
+
 func (s *fieldSpec) parseTagSpec(tag string, locked bool) {
 	isEmpty := len(s.sources) == 0
 	if idx := strings.Index(tag, ","); idx != -1 {
@@ -429,6 +472,13 @@ func (l *Loader) resolve(fields []*field) error {
 		}
 		cands = append(cands, candidate{name: s.String(), content: c, data: c.Data})
 	}
+	return l.resolveWith(fields, cands)
+}
+
+// resolveWith populates the bound field tree from the given candidates. It is
+// the shared tail of resolve and SubConfig.Load, so a deferred sub-document is
+// resolved (and validated) exactly like the snapshot it was captured from.
+func (l *Loader) resolveWith(fields []*field, cands []candidate) error {
 	var gerr []string
 	if err := l.resolveFields(fields, cands, &gerr); err != nil {
 		return err
@@ -506,9 +556,13 @@ func (l *Loader) resolveFields(fields []*field, cands []candidate, gerr *[]strin
 	return nil
 }
 
-// resolveField dispatches to the leaf, struct or list resolver for f.
+// resolveField dispatches to the leaf, struct, list or sub-document resolver
+// for f.
 func (l *Loader) resolveField(f *field, cands []candidate, gerr *[]string) error {
 	switch {
+	case f.spec.handling == handleSubConfig:
+		l.resolveSubConfig(f, cands, gerr)
+		return nil
 	case f.isList:
 		return l.resolveListField(f, cands, gerr)
 	case len(f.subFields) != 0:
@@ -577,6 +631,35 @@ func (l *Loader) resolveStructField(f *field, cands []candidate, gerr *[]string)
 	}
 	f.found = true
 	return l.resolveFields(f.subFields, childCands, gerr)
+}
+
+// resolveSubConfig captures the sub-document behind f instead of decoding it:
+// every candidate that holds the key contributes its own view, so a later
+// SubConfig.Load resolves the caller's target across the same sources, with the
+// same precedence, as a nested struct field would be resolved here.
+func (l *Loader) resolveSubConfig(f *field, cands []candidate, gerr *[]string) {
+	sub := &SubConfig{loader: l, pin: f.sources, locked: f.spec.locked}
+	for _, c := range cands {
+		v, ok := c.data[f.key]
+		if !ok {
+			continue
+		}
+		data, err := c.content.Encoder.DecodeData(v)
+		if err != nil {
+			*gerr = append(*gerr, err.Error())
+			continue
+		}
+		sub.docs = append(sub.docs, subDoc{name: c.name, content: c.content, data: data})
+	}
+	if len(sub.docs) == 0 {
+		return
+	}
+	if f.value.Kind() == reflect.Ptr {
+		f.value.Set(reflect.ValueOf(sub))
+	} else {
+		f.value.Set(reflect.ValueOf(*sub))
+	}
+	f.found = true
 }
 
 // resolveListField resolves a []struct field. A list is taken whole from the

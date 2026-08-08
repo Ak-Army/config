@@ -5,8 +5,8 @@
 //
 // Every envelope carries a key id (kid), so values can always be decrypted
 // with the right key and keys can be rotated: add the new key to the ring as
-// the active one, re-encrypt the configs (see cmd/configcrypt -rekey), then
-// drop the old key.
+// the active one, re-encrypt the configs (see cmd/configcrypt encrypt -file),
+// then drop the old key.
 package crypto
 
 import (

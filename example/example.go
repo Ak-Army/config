@@ -31,15 +31,26 @@ type Config struct {
 }
 
 type Amd2Config struct {
-	Active              bool           `config:"active"`
-	PhoneNumberPrefixes []string       `config:"phone-number-prefixes"`
-	AppParams           *Amd2AppParams `config:"app-params"`
+	Active              bool     `config:"active"`
+	PhoneNumberPrefixes []string `config:"phone-number-prefixes"`
+	// AppParams keeps the app-params block undecoded: its shape depends on the
+	// app driving amd2, so main loads it into the matching struct at runtime.
+	AppParams *config.SubConfig `config:"app-params"`
 }
 
 type Amd2AppParams struct {
 	Record         int    `config:"record"`
 	AnalyzedLength int64  `config:"analyzed_length"`
 	Filepath       string `config:"filepath"`
+}
+
+// Amd2AppParamsSecond is the second shape the same app-params block can take.
+// It shares no field with Amd2AppParams and may hold encrypted values of its
+// own — the sub-config is resolved with the loader's crypto and sources.
+type Amd2AppParamsSecond struct {
+	Mode      string  `config:"mode"`
+	Threshold float64 `config:"threshold"`
+	APIKey    string  `config:"api-key,encrypted"`
 }
 
 // Default returns a freshly initialised Config holding the default values.
@@ -54,9 +65,7 @@ func (*Config) Default() *Config {
 		StatPublishInterval: 1,
 		AutoRemoveInterval:  30,
 		DialerProjectCheck:  60,
-		Amd2Config: &Amd2Config{
-			AppParams: &Amd2AppParams{},
-		},
+		Amd2Config:          &Amd2Config{},
 	}
 }
 
@@ -92,5 +101,22 @@ func main() {
 		log.Fatal(err)
 	}
 	conf, err := c.Config()
-	fmt.Printf("%+v, err: %s\n", conf, err)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%+v\n", conf)
+
+	// The same app-params block is loaded into whichever struct the app needs;
+	// the values already held by the target act as its defaults.
+	params := &Amd2AppParams{Record: 1}
+	if err := conf.Amd2Config.AppParams.Load(params); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("app params: %+v\n", params)
+
+	second := &Amd2AppParamsSecond{}
+	if err := conf.Amd2Config.AppParams.Load(second); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("second app params: %+v\n", second)
 }

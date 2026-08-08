@@ -122,10 +122,66 @@ zero value: `config.NewStore[Settings](&Settings{})`.
 | `-` (as `<key>`)| For a struct field: inline its fields into the parent. Otherwise: skip. |
 
 Nested `struct`, `*struct`, and `[]struct` fields are resolved recursively;
-the key names the sub-document. Fields with no tag are ignored.
+the key names the sub-document. A `*config.SubConfig` field keeps its
+sub-document undecoded, see [Sub-configs](#sub-configs). Fields with no tag are
+ignored.
 
 > **Note:** the option order matters — the key must come first
 > (`"key,required"`, not `"required,key"`).
+
+## Sub-configs
+
+Sometimes the *shape* of a configuration block is not known when the
+configuration struct is written: the same block means one thing for one app and
+something entirely different for another. Type such a field
+`*config.SubConfig` — the loader then captures the sub-document instead of
+decoding it, and the application decides at runtime what to load it into:
+
+```go
+type Amd2Config struct {
+	Active    bool              `config:"active"`
+	AppParams *config.SubConfig `config:"app-params"`
+}
+
+type Amd2AppParams struct {
+	Record   int    `config:"record"`
+	Filepath string `config:"filepath"`
+}
+
+type Amd2AppParamsSecond struct {
+	Mode   string `config:"mode"`
+	APIKey string `config:"api-key,encrypted"`
+}
+```
+
+```go
+// Values the target already holds are its defaults: only keys present in the
+// sources overwrite them.
+params := &Amd2AppParams{Record: 1}
+if err := cfg.Amd2Config.AppParams.Load(params); err != nil { ... }
+
+// The very same sub-document, loaded into an unrelated struct:
+second := &Amd2AppParamsSecond{}
+if err := cfg.Amd2Config.AppParams.Load(second); err != nil { ... }
+```
+
+`Load` resolves the target exactly like a nested struct field is resolved, so
+everything above keeps working inside a sub-config: `config` tags, nested
+structs and lists, `required`, `encrypted` (the loader's crypto decrypts
+`ENC(...)` values in the target too), per-field source precedence and merging
+across sources. A `backend=` pin on the `SubConfig` field locks the target's
+fields to the same sources, just as it does for a nested struct. Every encoder
+(JSON, YAML, TOML) and backend is supported — the sub-document is decoded with
+the encoder of the source it came from.
+
+Two more rules:
+
+- If the key is in none of the sources, the field stays `nil` and `Load` is a
+  no-op that leaves the target untouched (a `nil` `*SubConfig` is safe to call).
+  Tag the field `required` to turn a missing block into a load error.
+- A `SubConfig` belongs to the snapshot it was loaded into. After a
+  watcher-triggered reload take it from a fresh `store.Config()` and call `Load`
+  again to see the new values.
 
 ## Encrypted values
 
@@ -191,39 +247,55 @@ Rules:
 ### Producing encrypted values
 
 Use the `configcrypt` helper (alias it as
-`go run github.com/Ak-Army/config/cmd/configcrypt`):
+`go run github.com/Ak-Army/config/cmd/configcrypt`). It takes a command
+(`create`, `update`, `encrypt`, `decrypt`), and every command needs the keyring
+with `-key`:
 
 ```sh
-# generate a key and put it in the keyring
-echo "prod-2026-07: $(configcrypt -genkey)" > config.keyring
+# create a keyring holding one fresh 32-byte key
+# (-kid defaults to kid-<YYYYMMDD>; the file is overwritten if it exists)
+configcrypt create -key config.keyring -kid prod-2026-07
 
-# encrypt a value with the active key (positional arg or stdin)
-configcrypt -key config.keyring "s3cr3t"
+# encrypt a value with the active key
+configcrypt encrypt -key config.keyring -in "s3cr3t"
 # -> ENC(prod-2026-07:4Yw3...base64...)
 
 # decrypt / inspect a value
-configcrypt -key config.keyring -d 'ENC(prod-2026-07:4Yw3...)'
+configcrypt decrypt -key config.keyring -in 'ENC(prod-2026-07:4Yw3...)'
+
+# decrypt every ENC(...) value of a whole config: preview on stdout,
+# or rewrite the file in place with -write
+configcrypt decrypt -key config.keyring -file config.json
 ```
 
-Programmatic encryption is also available via `crypto.EncryptValue`.
+Copy the printed `ENC(...)` envelope into the config file — `encrypt -file`
+does not encrypt plain values, it re-keys the already encrypted ones (see
+below). Programmatic encryption is available via `crypto.EncryptValue`.
 
 ### Key rotation
 
 Every value names its key, so old and new keys can coexist while configs are
 re-encrypted:
 
-1. Generate a new key and add it as the **first** entry of the keyring (it
-   becomes the active key); keep the old entry below it.
+1. Add a new key to the keyring:
+
+   ```sh
+   configcrypt update -key config.keyring -kid prod-2026-07
+   ```
+
+   `update` **appends** the key, so move its line to the **top** of the file to
+   make it the active one, keeping the old entry below it (it is still needed to
+   decrypt the not yet re-encrypted values).
 2. Deploy the keyring — services now decrypt both old and new values.
 3. Re-encrypt each config with the active key; only `ENC(...)` values change,
    every other byte of the file stays untouched (works for JSON, YAML, TOML):
 
    ```sh
-   configcrypt -key config.keyring -rekey -in config.json         # preview to stdout
-   configcrypt -key config.keyring -rekey -in config.json -write  # rewrite in place
+   configcrypt encrypt -key config.keyring -file config.json
    ```
 
-   Single values can be re-keyed too: `configcrypt -key config.keyring -rekey 'ENC(...)'`.
+   The file is rewritten in place (atomically); values already encrypted with
+   the active key are left alone, so re-running it is a no-op.
 4. Once no config references the old key id (`grep -r 'ENC(prod-2026-01:'`),
    remove its line from the keyring.
 
