@@ -7,6 +7,11 @@
 // with the right key and keys can be rotated: add the new key to the ring as
 // the active one, re-encrypt the configs (see cmd/configcrypt encrypt -file),
 // then drop the old key.
+//
+// The same command turns plaintext values of an existing config into envelopes:
+// wrap them in the PLAIN(...) marker and every marked value is encrypted with
+// the active key. The marker is transient — a value left marked is rejected by
+// DecryptValue instead of being loaded as the literal marker string.
 package crypto
 
 import (
@@ -21,6 +26,11 @@ import (
 const (
 	prefix = "ENC("
 	suffix = ")"
+	// plainPrefix marks a value that is still plaintext and waiting to be
+	// encrypted by cmd/configcrypt (encrypt -file). It is a transient state: a
+	// marked value must never reach a running service, so DecryptValue rejects
+	// it instead of loading the marker as the value.
+	plainPrefix = "PLAIN("
 )
 
 var kidPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -137,6 +147,12 @@ func (c *Crypto) IsEncrypted(s string) bool {
 	return strings.HasPrefix(s, prefix) && strings.HasSuffix(s, suffix)
 }
 
+// IsPlainMarked reports whether s is a plaintext value marked for encryption
+// with the PLAIN(...) marker.
+func (c *Crypto) IsPlainMarked(s string) bool {
+	return strings.HasPrefix(s, plainPrefix) && strings.HasSuffix(s, suffix)
+}
+
 // EncodeValue wraps a raw ciphertext into the ENC(<kid>:<base64>) envelope
 // using the active key id.
 func (c *Crypto) EncodeValue(ciphertext []byte) string {
@@ -163,10 +179,17 @@ func (c *Crypto) DecodeValue(s string) (string, []byte, error) {
 
 // DecryptValue resolves a possibly encrypted value: a plain value (no ENC(...)
 // envelope) passes through unchanged, an encrypted one is decrypted with the
-// key named by its kid. Safe to call on a nil *Crypto — it then only errors
-// when the value is actually encrypted.
+// key named by its kid, and one still marked PLAIN(...) is rejected. Safe to
+// call on a nil *Crypto — it then only errors when the value is actually
+// encrypted.
 func (c *Crypto) DecryptValue(s string) (string, error) {
 	if !c.IsEncrypted(s) {
+		// A still marked value would otherwise load as the literal
+		// "PLAIN(secret)" string — fail loudly instead.
+		if c.IsPlainMarked(s) {
+			return "", errors.New("value is still marked PLAIN(...), " +
+				"encrypt it with 'configcrypt encrypt -key <keyring> -file <config>'")
+		}
 		return s, nil
 	}
 	if c == nil || len(c.keys) == 0 {

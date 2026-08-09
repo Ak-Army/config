@@ -89,6 +89,31 @@ func (s *CryptoTestSuite) TestDecryptValuePlainPassthrough() {
 	s.Equal("plain value", plain)
 }
 
+// TestDecryptValuePlainMarked: a value left marked for encryption must never
+// load as the literal marker string.
+func (s *CryptoTestSuite) TestDecryptValuePlainMarked() {
+	c := s.testCrypto()
+
+	_, err := c.DecryptValue("PLAIN(s3cr3t)")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "still marked PLAIN(...)")
+
+	var nilCrypto *crypto.Crypto
+	_, err = nilCrypto.DecryptValue("PLAIN(s3cr3t)")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "still marked PLAIN(...)")
+}
+
+func (s *CryptoTestSuite) TestIsPlainMarked() {
+	c := s.testCrypto()
+
+	s.True(c.IsPlainMarked("PLAIN(s3cr3t)"))
+	s.True(c.IsPlainMarked("PLAIN()"))
+	s.False(c.IsPlainMarked("PLAIN(s3cr3t"))
+	s.False(c.IsPlainMarked("plain value"))
+	s.False(c.IsPlainMarked("ENC(v1:cmF3)"))
+}
+
 func (s *CryptoTestSuite) TestDecryptValueUnknownKid() {
 	c := s.testCrypto()
 	_, err := c.DecryptValue("ENC(v2:cmF3)")

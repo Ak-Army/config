@@ -237,7 +237,10 @@ Rules:
   struct/list fields the option is ignored.
 - A tagged field whose value is **not** in `ENC(...)` form passes through as
   plaintext — the same field can be encrypted in production and plain in a
-  local config.
+  local config. The one exception is a value still wrapped in the
+  `PLAIN(...)` marker: that is an unfinished encryption and is reported as a
+  field error, see
+  [Encrypting an existing config](#encrypting-an-existing-config).
 - An `ENC(...)` value without a configured crypto, with an unknown key id, or
   one that fails to decrypt, surfaces as a per-field error via
   `store.Config()`.
@@ -268,9 +271,43 @@ configcrypt decrypt -key config.keyring -in 'ENC(prod-2026-07:4Yw3...)'
 configcrypt decrypt -key config.keyring -file config.json
 ```
 
-Copy the printed `ENC(...)` envelope into the config file — `encrypt -file`
-does not encrypt plain values, it re-keys the already encrypted ones (see
-below). Programmatic encryption is available via `crypto.EncryptValue`.
+Programmatic encryption is available via `crypto.EncryptValue`.
+
+### Encrypting an existing config
+
+To switch the plaintext values of a config over, mark each of them with the
+`PLAIN(...)` marker:
+
+```json
+{
+  "db_pass": "PLAIN(hunter2)",
+  "api-key": "PLAIN(s3cr3t)"
+}
+```
+
+then encrypt the whole file in one go:
+
+```sh
+configcrypt encrypt -key config.keyring -file config.json
+# encrypted 2, re-keyed 0, unchanged 0
+```
+
+Every marker is replaced by an envelope built with the active key, and the file
+is rewritten in place (atomically) — the marked values are the only thing that
+changes, formatting, key order and comments stay byte for byte the same. The
+replacement is textual, so it works for JSON, YAML and TOML alike, and the same
+run also re-keys the values that were already encrypted (see
+[Key rotation](#key-rotation)), which makes re-running it a no-op.
+
+The marker ends at the `)` that also closes the config value, so a secret may
+contain parentheses (`PLAIN(p@ss(w0rd))`) and a minified document may hold
+several markers on one line. A value spanning multiple lines cannot be marked —
+encrypt it with `encrypt -in` and paste the envelope in.
+
+> **Careful:** the marker is a transient state. A `PLAIN(...)` value left in a
+> config is **not** loaded: the field reports an error via `store.Config()`, so
+> a forgotten encryption surfaces at startup instead of silently loading the
+> marker as the value.
 
 ### Key rotation
 
@@ -295,7 +332,9 @@ re-encrypted:
    ```
 
    The file is rewritten in place (atomically); values already encrypted with
-   the active key are left alone, so re-running it is a no-op.
+   the active key are left alone, so re-running it is a no-op. The same run
+   also picks up any `PLAIN(...)` marker, see
+   [Encrypting an existing config](#encrypting-an-existing-config).
 4. Once no config references the old key id (`grep -r 'ENC(prod-2026-01:'`),
    remove its line from the keyring.
 
