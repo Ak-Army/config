@@ -1,7 +1,7 @@
 # config
 
 A small, reflection-based configuration loader for Go with pluggable
-**backends** (file, environment, Consul) and **encoders** (JSON, YAML, TOML).
+**backends** (file, environment, Consul, memory) and **encoders** (JSON, YAML, TOML).
 It fills a target struct from one or more sources based on `config:"..."`
 struct tags, supports nested structs, slices, defaults, required keys,
 per-field source pinning, and hot-reloading (watch).
@@ -345,6 +345,7 @@ re-encrypted:
 | File     | `file.New(...)`    | `WithPath`, `WithWatchInterval`, `WithOption(backend...)`   |
 | Env      | `env.New(...)`     | `WithDefaults` (dotenv file), `WithPrefix`, `WithStripPrefix`, `WithWatchInterval` |
 | Consul   | `consul.New(...)`  | `WithClient` (required), `WithPrefix`, `WithStripPrefix`     |
+| Memory   | `memory.New(...)`  | `WithValue` (a Go value), `WithDocument` (bytes in the encoder's format); for tests |
 
 Common backend options (via `WithOption`): `backend.WithName(...)` sets the
 name matched by `backend=`, `backend.WithEncoder(...)` picks the encoder,
