@@ -49,7 +49,7 @@ func (f *file) Read() (*backend.Content, error) {
 		Encoder:   f.opts.Encoder,
 		Source:    f.String(),
 		Timestamp: info.ModTime(),
-		Data:      make(map[string]interface{}),
+		Data:      make(map[string]any),
 	}
 	s.Data, err = f.opts.Encoder.DecodeData(b)
 	if err != nil {

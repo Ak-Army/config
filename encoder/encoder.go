@@ -1,10 +1,10 @@
 package encoder
 
 type Encoder interface {
-	Encode(interface{}) ([]byte, error)
-	Decode(interface{}, interface{}) error
-	DecodeData(interface{}) (Data, error)
-	DecodeDataList(interface{}) ([]Data, error)
+	Encode(any) ([]byte, error)
+	Decode(any, any) error
+	DecodeData(any) (Data, error)
+	DecodeDataList(any) ([]Data, error)
 	// DecodeValue parses a single value written in the encoder's native format
 	// into a plain Go value (map[string]interface{}, []interface{} or a scalar)
 	// following the JSON data model, so the result marshals losslessly into the
@@ -15,8 +15,8 @@ type Encoder interface {
 	// value in the configured format and still merge them into a path-built
 	// tree. Formats without a bare-scalar document (TOML) return an error for
 	// scalar input; use YAML or JSON for scalar leaves.
-	DecodeValue(interface{}) (interface{}, error)
+	DecodeValue(any) (any, error)
 	String() string
 }
 
-type Data map[string]interface{}
+type Data map[string]any

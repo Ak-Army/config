@@ -9,7 +9,7 @@ import (
 
 type memory struct {
 	opts  backend.Options
-	value interface{}
+	value any
 	doc   []byte
 	set   bool
 }

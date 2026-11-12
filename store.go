@@ -45,7 +45,7 @@ func NewStore[T any](handler Handler[T]) *Store[T] {
 // newSnapshot returns a fresh target for the loader to resolve into. It
 // satisfies the internal loadable interface and is called by the loader, not
 // directly.
-func (s *Store[T]) newSnapshot() interface{} {
+func (s *Store[T]) newSnapshot() any {
 	if s.handler != nil {
 		return s.handler.Default()
 	}
@@ -54,7 +54,7 @@ func (s *Store[T]) newSnapshot() interface{} {
 
 // setSnapshot stores the resolved snapshot (and any error) after letting the
 // handler post-process it. It satisfies the internal loadable interface.
-func (s *Store[T]) setSnapshot(snapshot interface{}, err error) {
+func (s *Store[T]) setSnapshot(snapshot any, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	conf := snapshot.(*T)

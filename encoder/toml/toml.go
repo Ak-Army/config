@@ -21,7 +21,7 @@ type innerToml struct {
 	InnerToml []byte
 }
 
-func (d *innerToml) UnmarshalTOML(text interface{}) error {
+func (d *innerToml) UnmarshalTOML(text any) error {
 	var err error
 	d.InnerToml, err = json.Marshal(text)
 	return err
@@ -36,7 +36,7 @@ func (d *innerToml) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (t tomlEncoder) Encode(v interface{}) ([]byte, error) {
+func (t tomlEncoder) Encode(v any) ([]byte, error) {
 	b := bytes.NewBuffer(nil)
 	err := toml.NewEncoder(b).Encode(v)
 	if err != nil {
@@ -45,7 +45,7 @@ func (t tomlEncoder) Encode(v interface{}) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-func (t tomlEncoder) Decode(data interface{}, v interface{}) error {
+func (t tomlEncoder) Decode(data any, v any) error {
 	if d, ok := data.(innerToml); ok {
 		return json.Unmarshal(d.InnerToml, v)
 	}
@@ -55,7 +55,7 @@ func (t tomlEncoder) Decode(data interface{}, v interface{}) error {
 	return fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
 
-func (t tomlEncoder) DecodeData(data interface{}) (encoder.Data, error) {
+func (t tomlEncoder) DecodeData(data any) (encoder.Data, error) {
 	encoderData := make(encoder.Data)
 	if d, ok := data.([]byte); ok {
 		ret := make(map[string]innerToml)
@@ -94,7 +94,7 @@ func (t tomlEncoder) DecodeData(data interface{}) (encoder.Data, error) {
 	}
 	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
-func (t tomlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
+func (t tomlEncoder) DecodeDataList(data any) ([]encoder.Data, error) {
 	if d, ok := data.([]byte); ok {
 		var rets []map[string]json.RawMessage
 		err := toml.Unmarshal(d, &rets)
@@ -146,7 +146,7 @@ func (t tomlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 // DecodeValue parses a single TOML value into a plain Go value. TOML has no
 // bare-scalar document — the top level must be a table (key = value pairs) — so
 // a scalar or bare array returns an error; use YAML or JSON for scalar leaves.
-func (t tomlEncoder) DecodeValue(data interface{}) (interface{}, error) {
+func (t tomlEncoder) DecodeValue(data any) (any, error) {
 	var raw []byte
 	switch d := data.(type) {
 	case json.RawMessage:
@@ -156,7 +156,7 @@ func (t tomlEncoder) DecodeValue(data interface{}) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 	}
-	v := make(map[string]interface{})
+	v := make(map[string]any)
 	if err := toml.Unmarshal(raw, &v); err != nil {
 		return nil, err
 	}

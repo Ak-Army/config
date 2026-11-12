@@ -14,7 +14,7 @@ import (
 )
 
 // bytesOf normalises the raw representations DecodeData/DecodeDataList accept.
-func bytesOf(data interface{}) ([]byte, bool) {
+func bytesOf(data any) ([]byte, bool) {
 	switch d := data.(type) {
 	case json.RawMessage:
 		return d, true
@@ -34,11 +34,11 @@ func New() encoder.Encoder {
 	return jsonEncoder{}
 }
 
-func (j jsonEncoder) Encode(v interface{}) ([]byte, error) {
+func (j jsonEncoder) Encode(v any) ([]byte, error) {
 	return jsoniter.Marshal(v)
 }
 
-func (j jsonEncoder) Decode(data interface{}, v interface{}) error {
+func (j jsonEncoder) Decode(data any, v any) error {
 	if d, ok := data.(json.RawMessage); ok {
 		return jsoniter.Unmarshal(d, v)
 	}
@@ -52,7 +52,7 @@ func (j jsonEncoder) Decode(data interface{}, v interface{}) error {
 // value as a raw message for a later typed Decode. It streams the object with a
 // single iterator so only one map is built and no intermediate
 // map[string]json.RawMessage is boxed into interface values.
-func (j jsonEncoder) DecodeData(data interface{}) (encoder.Data, error) {
+func (j jsonEncoder) DecodeData(data any) (encoder.Data, error) {
 	d, ok := bytesOf(data)
 	if !ok {
 		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
@@ -81,7 +81,7 @@ func (j jsonEncoder) DecodeData(data interface{}) (encoder.Data, error) {
 
 // DecodeDataList splits a JSON array of objects the same way DecodeData splits a
 // single object.
-func (j jsonEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
+func (j jsonEncoder) DecodeDataList(data any) ([]encoder.Data, error) {
 	d, ok := bytesOf(data)
 	if !ok {
 		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
@@ -107,14 +107,14 @@ func (j jsonEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 // DecodeValue parses a single JSON value (object, array or scalar) into a plain
 // Go value. Numbers are kept as json.Number so they survive a later re-marshal
 // (e.g. by the consul backend) without float64 precision loss.
-func (j jsonEncoder) DecodeValue(data interface{}) (interface{}, error) {
+func (j jsonEncoder) DecodeValue(data any) (any, error) {
 	d, ok := bytesOf(data)
 	if !ok {
 		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 	}
 	dec := json.NewDecoder(bytes.NewReader(d))
 	dec.UseNumber()
-	var v interface{}
+	var v any
 	if err := dec.Decode(&v); err != nil {
 		return nil, err
 	}

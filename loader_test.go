@@ -1396,8 +1396,7 @@ func BenchmarkAddSourceJson(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Unable to write file: %s", path)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 	loader, err := NewLoader(ctx)
 	if err != nil {
 		b.Fatal("Unable to create loader")
@@ -1430,8 +1429,7 @@ nested:
 	if err != nil {
 		b.Fatalf("Unable to write file: %s", path)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 	loader, err := NewLoader(ctx)
 	if err != nil {
 		b.Fatal("Unable to create loader")
@@ -1467,8 +1465,7 @@ key = "key"
 	if err != nil {
 		b.Fatalf("Unable to write file: %s", path)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 	loader, err := NewLoader(ctx)
 	if err != nil {
 		b.Fatal("Unable to create loader")
@@ -1515,8 +1512,7 @@ func BenchmarkLoadJson(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Unable to write file: %s", path)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 	loader, err := NewLoader(ctx)
 	if err != nil {
 		b.Fatal("Unable to create loader")
@@ -1559,8 +1555,7 @@ nested:
 	if err != nil {
 		b.Fatalf("Unable to write file: %s", path)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 	loader, err := NewLoader(ctx)
 	if err != nil {
 		b.Fatal("Unable to create loader")
@@ -1603,8 +1598,7 @@ key = "key"
 	if err != nil {
 		b.Fatalf("Unable to write file: %s", path)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 	loader, err := NewLoader(ctx)
 	if err != nil {
 		b.Fatal("Unable to create loader")

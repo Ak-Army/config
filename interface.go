@@ -5,6 +5,6 @@ package config
 // types declared in this package can satisfy it — Store is the sole
 // implementation, which is why Load accepts only a *Store.
 type loadable interface {
-	newSnapshot() interface{}
-	setSnapshot(interface{}, error)
+	newSnapshot() any
+	setSnapshot(any, error)
 }

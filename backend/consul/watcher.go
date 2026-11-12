@@ -1,12 +1,12 @@
 package consul
 
 import (
-	"log"
 	"sync"
 
 	"github.com/Ak-Army/xlog"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/api/watch"
+	"github.com/hashicorp/go-hclog"
 
 	"github.com/Ak-Army/config/backend"
 )
@@ -28,7 +28,7 @@ func newWatcher(c *consul) (backend.Watcher, error) {
 		exit:   make(chan bool),
 		logger: xlog.FromContext(c.opts.Context),
 	}
-	wp, err := watch.Parse(map[string]interface{}{"type": "keyprefix", "prefix": c.prefix})
+	wp, err := watch.Parse(map[string]any{"type": "keyprefix", "prefix": c.prefix})
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func newWatcher(c *consul) (backend.Watcher, error) {
 	return w, nil
 }
 
-func (w *watcher) handle(idx uint64, data interface{}) {
+func (w *watcher) handle(idx uint64, data any) {
 	if data == nil {
 		return
 	}
@@ -53,7 +53,7 @@ func (w *watcher) handle(idx uint64, data interface{}) {
 		w.logger.Errorf("consul watcher: read failed, update dropped: %s", err)
 		return
 	}
-	// The consumer may have stopped reading (context cancelled); a bare send
+	// The consumer may have stopped reading (context canceled); a bare send
 	// would block this handler and leak the watch-plan goroutine forever.
 	select {
 	case w.ch <- cs:
@@ -62,8 +62,12 @@ func (w *watcher) handle(idx uint64, data interface{}) {
 }
 
 func (w *watcher) Watch() <-chan *backend.Content {
-	go w.wp.RunWithClientAndLogger(w.c.client, log.New(w.logger, "watch:", 0)) //lint:ignore SA1019 .
-
+	go func() {
+		err := w.wp.RunWithClientAndHclog(w.c.client, hclog.New(&hclog.LoggerOptions{Name: "watch:", Output: w.logger}))
+		if err != nil {
+			w.logger.Errorf("consul watcher: watch failed: %s", err)
+		}
+	}()
 	return w.ch
 }
 

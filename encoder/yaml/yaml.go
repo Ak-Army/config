@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/Ak-Army/config/encoder"
 )
@@ -16,11 +16,11 @@ func New() encoder.Encoder {
 	return yamlEncoder{}
 }
 
-func (y yamlEncoder) Encode(v interface{}) ([]byte, error) {
+func (y yamlEncoder) Encode(v any) ([]byte, error) {
 	return yaml.Marshal(v)
 }
 
-func (y yamlEncoder) Decode(data interface{}, v interface{}) error {
+func (y yamlEncoder) Decode(data any, v any) error {
 	if d, ok := data.(json.RawMessage); ok {
 		return json.Unmarshal(d, v)
 	}
@@ -30,9 +30,9 @@ func (y yamlEncoder) Decode(data interface{}, v interface{}) error {
 // DecodeData parses YAML with yaml.v3 (YAML 1.2: only true/false are booleans,
 // so unquoted yes/no/on/off stay strings) and re-encodes each top-level value
 // as JSON, matching the json.RawMessage representation Decode expects.
-func (y yamlEncoder) DecodeData(data interface{}) (encoder.Data, error) {
+func (y yamlEncoder) DecodeData(data any) (encoder.Data, error) {
 	if d, ok := data.([]byte); ok {
-		var yamlMap map[string]interface{}
+		var yamlMap map[string]any
 		if err := yaml.Unmarshal(d, &yamlMap); err != nil {
 			return nil, err
 		}
@@ -52,9 +52,9 @@ func (y yamlEncoder) DecodeData(data interface{}) (encoder.Data, error) {
 	return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 }
 
-func (y yamlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
+func (y yamlEncoder) DecodeDataList(data any) ([]encoder.Data, error) {
 	if d, ok := data.([]byte); ok {
-		var yamlMaps []map[string]interface{}
+		var yamlMaps []map[string]any
 		if err := yaml.Unmarshal(d, &yamlMaps); err != nil {
 			return nil, err
 		}
@@ -89,12 +89,12 @@ func (y yamlEncoder) DecodeDataList(data interface{}) ([]encoder.Data, error) {
 // plain Go value. yaml.v3 decodes mappings into map[string]interface{} and
 // scalars into their Go equivalents, so the result marshals cleanly into the
 // neutral json.RawMessage representation the loader consumes.
-func (y yamlEncoder) DecodeValue(data interface{}) (interface{}, error) {
+func (y yamlEncoder) DecodeValue(data any) (any, error) {
 	raw, ok := rawBytes(data)
 	if !ok {
 		return nil, fmt.Errorf("unknown data type %s", reflect.TypeOf(data))
 	}
-	var v interface{}
+	var v any
 	if err := yaml.Unmarshal(raw, &v); err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func (y yamlEncoder) DecodeValue(data interface{}) (interface{}, error) {
 
 // rawBytes normalises the raw representations DecodeValue accepts: a
 // json.RawMessage leaf (from another backend) or native []byte source text.
-func rawBytes(data interface{}) ([]byte, bool) {
+func rawBytes(data any) ([]byte, bool) {
 	switch d := data.(type) {
 	case json.RawMessage:
 		return d, true
@@ -118,7 +118,7 @@ func (y yamlEncoder) String() string {
 	return "yaml"
 }
 
-func toEncoderData(yamlMap map[string]interface{}) (encoder.Data, error) {
+func toEncoderData(yamlMap map[string]any) (encoder.Data, error) {
 	encoderData := make(encoder.Data, len(yamlMap))
 	for k, v := range yamlMap {
 		raw, err := json.Marshal(v)

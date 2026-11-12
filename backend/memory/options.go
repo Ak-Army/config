@@ -8,7 +8,7 @@ type Option func(m *memory)
 
 // WithValue serves v, typically a map[string]interface{}, encoded with the
 // backend's encoder.
-func WithValue(v interface{}) Option {
+func WithValue(v any) Option {
 	return func(m *memory) {
 		m.value, m.doc, m.set = v, nil, true
 	}

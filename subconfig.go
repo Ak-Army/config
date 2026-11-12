@@ -11,7 +11,7 @@ import (
 
 // subConfigType is matched by parseType to recognise a deferred sub-document
 // field, whether it is declared as a SubConfig or a *SubConfig.
-var subConfigType = reflect.TypeOf(SubConfig{})
+var subConfigType = reflect.TypeFor[SubConfig]()
 
 // SubConfig is a deferred sub-document. A field typed *SubConfig (or SubConfig)
 // captures the document behind its key instead of decoding it, so the
@@ -66,9 +66,9 @@ type subDoc struct {
 // Errors are returned per load: missing required keys, decode failures and
 // values that cannot be decrypted are collected the same way they are for the
 // enclosing snapshot.
-func (s *SubConfig) Load(target interface{}) error {
+func (s *SubConfig) Load(target any) error {
 	ref := reflect.ValueOf(target)
-	if !ref.IsValid() || ref.Kind() != reflect.Ptr || ref.IsNil() || ref.Elem().Kind() != reflect.Struct {
+	if !ref.IsValid() || ref.Kind() != reflect.Pointer || ref.IsNil() || ref.Elem().Kind() != reflect.Struct {
 		return errors.New("provided target must be a pointer to struct")
 	}
 	// No documents means the loader never populated this SubConfig, so there is

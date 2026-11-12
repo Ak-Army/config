@@ -52,7 +52,7 @@ func (c *consul) read(kv api.KVPairs) (*backend.Content, error) {
 		Source:    c.String(),
 		Timestamp: time.Now(),
 	}
-	tree := make(map[string]interface{})
+	tree := make(map[string]any)
 	for _, v := range kv {
 		pathString := strings.TrimPrefix(strings.TrimPrefix(v.Key, strings.TrimPrefix(c.stripPrefix, "/")), "/")
 		if pathString == "" {
@@ -85,17 +85,17 @@ func (c *consul) read(kv api.KVPairs) (*backend.Content, error) {
 // and in-value tables compose (e.g. `db` = {host} together with `db/pass` = "x"
 // yields {host, pass}). Putting a leaf where a table already lives, or a table
 // where a leaf lives, is a conflict.
-func insert(tree map[string]interface{}, path []string, val interface{}) error {
+func insert(tree map[string]any, path []string, val any) error {
 	m := tree
 	for _, dir := range path[:len(path)-1] {
 		existing, ok := m[dir]
 		if !ok {
-			next := make(map[string]interface{})
+			next := make(map[string]any)
 			m[dir] = next
 			m = next
 			continue
 		}
-		next, ok := existing.(map[string]interface{})
+		next, ok := existing.(map[string]any)
 		if !ok {
 			return fmt.Errorf("consul key path conflict at %q: %q is both a leaf and a prefix",
 				strings.Join(path, "/"),
@@ -110,8 +110,8 @@ func insert(tree map[string]interface{}, path []string, val interface{}) error {
 		return nil
 	}
 	// Both sides are tables: deep-merge so path nesting and in-value tables compose.
-	if em, eok := existing.(map[string]interface{}); eok {
-		if vm, vok := val.(map[string]interface{}); vok {
+	if em, eok := existing.(map[string]any); eok {
+		if vm, vok := val.(map[string]any); vok {
 			mergeMaps(em, vm)
 			return nil
 		}
@@ -123,11 +123,11 @@ func insert(tree map[string]interface{}, path []string, val interface{}) error {
 
 // mergeMaps deep-merges src into dst, recursing into tables present on both
 // sides. A non-table collision lets src win, matching a plain map assignment.
-func mergeMaps(dst, src map[string]interface{}) {
+func mergeMaps(dst, src map[string]any) {
 	for k, sv := range src {
 		if dv, ok := dst[k]; ok {
-			if dm, dok := dv.(map[string]interface{}); dok {
-				if sm, sok := sv.(map[string]interface{}); sok {
+			if dm, dok := dv.(map[string]any); dok {
+				if sm, sok := sv.(map[string]any); sok {
 					mergeMaps(dm, sm)
 					continue
 				}

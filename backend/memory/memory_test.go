@@ -54,9 +54,9 @@ func (s *MemoryTestSuite) TestReadNotSet() {
 }
 
 func (s *MemoryTestSuite) TestValue() {
-	c := s.load(memory.New(memory.WithValue(map[string]interface{}{
+	c := s.load(memory.New(memory.WithValue(map[string]any{
 		"name":  "x",
-		"inner": map[string]interface{}{"count": 3},
+		"inner": map[string]any{"count": 3},
 		"list":  []string{"a", "b"},
 		"map":   map[string]int{"k": 1},
 	})))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -146,18 +147,12 @@ func Load[T any](l *Loader, s *Store[T]) error {
 	to := s.newSnapshot()
 	ref := reflect.ValueOf(to)
 
-	if !ref.IsValid() || ref.Kind() != reflect.Ptr || ref.Elem().Kind() != reflect.Struct {
+	if !ref.IsValid() || ref.Kind() != reflect.Pointer || ref.Elem().Kind() != reflect.Struct {
 		return errors.New("provided target must be a pointer to struct")
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	registered := false
-	for _, w := range l.backendWatcher {
-		if w == loadable(s) {
-			registered = true
-			break
-		}
-	}
+	registered := slices.Contains(l.backendWatcher, loadable(s))
 	if !registered {
 		l.backendWatcher = append(l.backendWatcher, s)
 	}
@@ -172,7 +167,7 @@ func (l *Loader) load(c loadable) {
 
 // loadInto resolves the sources into the given snapshot and stores it.
 // It must be called with l.mu held.
-func (l *Loader) loadInto(c loadable, to interface{}) {
+func (l *Loader) loadInto(c loadable, to any) {
 	ref := reflect.ValueOf(to).Elem()
 	fields := bind(l.specsFor(ref.Type(), nil, false), ref)
 	err := l.resolve(fields)
@@ -304,7 +299,7 @@ func parseType(t reflect.Type, sources []string, locked bool) []*fieldSpec {
 			}
 			spec.parseTagSpec(tag, locked)
 			list = append(list, spec)
-		case reflect.Ptr:
+		case reflect.Pointer:
 			if typ.Elem() == subConfigType {
 				if tag == "-" {
 					continue
@@ -426,11 +421,11 @@ func (s *fieldSpec) markSubConfig(tag string, locked bool) {
 
 func (s *fieldSpec) parseTagSpec(tag string, locked bool) {
 	isEmpty := len(s.sources) == 0
-	if idx := strings.Index(tag, ","); idx != -1 {
-		s.key = tag[:idx]
-		opts := strings.Split(tag[idx+1:], ",")
+	if before, after, ok := strings.Cut(tag, ","); ok {
+		s.key = before
+		opts := strings.SplitSeq(after, ",")
 
-		for _, opt := range opts {
+		for opt := range opts {
 			if opt == "required" {
 				s.required = true
 			}
@@ -513,11 +508,8 @@ func filterCandidates(cands []candidate, sources []string) []candidate {
 	}
 	out := make([]candidate, 0, len(cands))
 	for _, c := range cands {
-		for _, name := range sources {
-			if c.name == name {
-				out = append(out, c)
-				break
-			}
+		if slices.Contains(sources, c.name) {
+			out = append(out, c)
 		}
 	}
 	return out
@@ -594,11 +586,11 @@ func (l *Loader) resolveLeaf(f *field, cands []candidate, gerr *[]string) {
 
 // decodeLeaf decodes a single leaf value into f, decrypting it first when the
 // field carries the `encrypted` option.
-func (l *Loader) decodeLeaf(f *field, c *backend.Content, v interface{}) error {
+func (l *Loader) decodeLeaf(f *field, c *backend.Content, v any) error {
 	if f.encrypted {
 		return l.decodeEncrypted(f, c, v)
 	}
-	var to interface{}
+	var to any
 	if f.value.CanAddr() {
 		to = f.value.Addr().Interface()
 	} else {
@@ -654,7 +646,7 @@ func (l *Loader) resolveSubConfig(f *field, cands []candidate, gerr *[]string) {
 	if len(sub.docs) == 0 {
 		return
 	}
-	if f.value.Kind() == reflect.Ptr {
+	if f.value.Kind() == reflect.Pointer {
 		f.value.Set(reflect.ValueOf(sub))
 	} else {
 		f.value.Set(reflect.ValueOf(*sub))
@@ -731,7 +723,7 @@ func validateRequired(fields []*field) error {
 // The raw value is decoded into a string with the content's own encoder and
 // handed to the crypto, which decrypts ENC(...) values and passes plain
 // values through unchanged.
-func (l *Loader) decodeEncrypted(f *field, c *backend.Content, v interface{}) error {
+func (l *Loader) decodeEncrypted(f *field, c *backend.Content, v any) error {
 	var s string
 	if err := c.Encoder.Decode(v, &s); err != nil {
 		return err
@@ -742,7 +734,7 @@ func (l *Loader) decodeEncrypted(f *field, c *backend.Content, v interface{}) er
 	}
 	target := f.value
 	switch {
-	case target.Kind() == reflect.Ptr && target.Type().Elem().Kind() == reflect.String:
+	case target.Kind() == reflect.Pointer && target.Type().Elem().Kind() == reflect.String:
 		p := reflect.New(target.Type().Elem())
 		p.Elem().SetString(s)
 		target.Set(p)
