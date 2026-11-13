@@ -351,6 +351,19 @@ Common backend options (via `WithOption`): `backend.WithName(...)` sets the
 name matched by `backend=`, `backend.WithEncoder(...)` picks the encoder,
 `backend.WithWatcher()` enables watching.
 
+### Unusable Consul values
+
+The Consul source reads its prefix **key by key**: a value that does not decode
+in the source's encoder, or whose path clashes with another key (`a` and `a/b`),
+drops only that key, never the whole read or watch update. The key falls back
+to its **last usable value** seen by this process; a key that never had one is
+left out. A deleted key is forgotten, last usable value included.
+
+Each unusable key is logged once per Consul `ModifyIndex` as a warning
+(`Unable to use Consul value`, fields `key`, `modifyIndex`, `lastValidKept`)
+through the logger in the backend's context (`backend.WithContext`).
+Folder keys (ending in `/`) are skipped silently.
+
 ### Source precedence
 
 Resolution is **per field**: each field independently takes its value from the
