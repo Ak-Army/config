@@ -232,6 +232,28 @@ func (s *ConsulTestSuite) TestReadKVLastValidTableDropsMergedPaths() {
 	s.NotContains(db, "pass")
 }
 
+// TestReadKVEmptyValueClearsKey: an ON→OFF switch written as a non-empty value
+// followed by an empty one must end up absent, not revived from the ON value.
+func (s *ConsulTestSuite) TestReadKVEmptyValueClearsKey() {
+	c := s.newLoggedConsul()
+	s.mustRead(c, kvPair("drain/c/s/e", `["drain"]`, 1), kvPair("host", `"localhost"`, 1))
+	content := s.mustRead(c, kvPair("drain/c/s/e", ``, 2), kvPair("host", `"localhost"`, 1))
+	s.NotContains(content.Data, "drain")
+	s.Equal("localhost", s.stringAt(content.Data, content.Encoder, "host"))
+	s.Empty(s.logged)
+
+	content = s.mustRead(c, kvPair("drain/c/s/e", `{broken`, 3))
+	s.NotContains(content.Data, "drain")
+}
+
+func (s *ConsulTestSuite) TestReadKVSkipsEmptyValueSilently() {
+	c := s.newLoggedConsul()
+	content := s.mustRead(c, kvPair("init", ``, 1), kvPair("host", `"localhost"`, 1))
+	s.NotContains(content.Data, "init")
+	s.Equal("localhost", s.stringAt(content.Data, content.Encoder, "host"))
+	s.Empty(s.logged)
+}
+
 func (s *ConsulTestSuite) TestReadKVSkipsFolderKeySilently() {
 	c := s.newLoggedConsul()
 	content := s.mustRead(c, kvPair("db/", ``, 1), kvPair("db/name", `"cfg"`, 1))

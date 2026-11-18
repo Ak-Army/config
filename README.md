@@ -357,7 +357,9 @@ The Consul source reads its prefix **key by key**: a value that does not decode
 in the source's encoder, or whose path clashes with another key (`a` and `a/b`),
 drops only that key, never the whole read or watch update. The key falls back
 to its **last usable value** seen by this process; a key that never had one is
-left out. A deleted key is forgotten, last usable value included.
+left out. A deleted key is forgotten, last usable value included, and so is a
+key with an empty value: clearing a key switches it off instead of reviving
+its last usable value.
 
 Each unusable key is logged once per Consul `ModifyIndex` as a warning
 (`Unable to use Consul value`, fields `key`, `modifyIndex`, `lastValidKept`)

@@ -72,6 +72,8 @@ func (c *consul) Watcher() (backend.Watcher, error) {
 // read builds the content tree key by key. An unusable value (undecodable, or
 // clashing with another key's path) drops only its own key and falls back to
 // that key's last usable value, so one bad key cannot freeze all the others.
+// An empty value counts as an absent key: clearing a key is how a flag is
+// switched off, so it must not fall back to the value it is clearing.
 func (c *consul) read(kvs api.KVPairs) (*backend.Content, error) {
 	r := &kvRead{
 		tree:     make(map[string]any),
@@ -87,7 +89,7 @@ func (c *consul) read(kvs api.KVPairs) (*backend.Content, error) {
 
 func (c *consul) readKey(r *kvRead, kv *api.KVPair) {
 	path := c.keyPath(kv.Key)
-	if path == nil {
+	if path == nil || len(kv.Value) == 0 {
 		return
 	}
 	err := c.place(r.tree, path, kv.Value)
